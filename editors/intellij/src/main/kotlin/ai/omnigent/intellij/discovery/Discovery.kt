@@ -2,6 +2,8 @@ package ai.omnigent.intellij.discovery
 
 import java.nio.file.Files
 import java.nio.file.Paths
+import ai.omnigent.intellij.discovery.isPidAlive as osIsPidAlive
+import ai.omnigent.intellij.discovery.probeHealth as httpProbeHealth
 
 /**
  * Local-server discovery: read ~/.omnigent/local_server.pid, parse it, confirm
@@ -29,9 +31,10 @@ val defaultDiscoveryIO: DiscoveryIO = object : DiscoveryIO {
         }
     }
 
-    override fun isPidAlive(pid: Int): Boolean = isPidAlive(pid)
+    // Qualified aliases: an unqualified call here would bind to this member and recurse.
+    override fun isPidAlive(pid: Int): Boolean = osIsPidAlive(pid)
 
-    override fun probeHealth(base: String, timeoutMs: Long): HealthOutcome = probeHealth(base, timeoutMs)
+    override fun probeHealth(base: String, timeoutMs: Long): HealthOutcome = httpProbeHealth(base, timeoutMs)
 }
 
 sealed class LocalDiscovery {
