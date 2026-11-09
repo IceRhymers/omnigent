@@ -1,25 +1,27 @@
 /**
- * Omnigent VS Code extension entry point (minimal iframe-only build).
+ * Omnigent VS Code extension entry point (iframe build).
  *
  * activate() wires:
- *  - Config / local-server discovery
  *  - A minimal Sessions/home tree view (so the activity-bar icon renders) whose
  *    welcome content offers an "Open Omnigent" button
  *  - EditorPanelController: the single editor-beside iframe surface
- *  - The omnigent.open command
+ *  - ServerConnection: local-server discovery, or a remote server through the
+ *    local credential proxy, re-resolved when `omnigent.serverUrl` changes
+ *  - The omnigent.open, omnigent.connect, and omnigent.signOut commands
  */
 import * as vscode from "vscode";
-import { discoverLocalServer, DEFAULT_HEALTH_TIMEOUT_MS } from "./discovery";
-import { resolveServerTarget } from "./config";
-import { readSettings } from "./config/vscodeSettings";
 import { EditorPanelController } from "./panel/EditorPanelController";
 import { registerOpenPanel } from "./commands/openPanel";
+import { registerConnect } from "./commands/connect";
+import { registerSignOut } from "./commands/signOut";
+import { ServerConnection } from "./servers/connection";
 
 /** Id of the minimal activity-bar view (declared in package.json contributes.views). */
 const HOME_VIEW_ID = "omnigent.home";
 
 let output: vscode.OutputChannel | undefined;
 let controller: EditorPanelController | undefined;
+let connection: ServerConnection | undefined;
 
 /**
  * A no-op tree provider. A `viewsContainer` only renders its activity-bar icon
@@ -42,46 +44,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Single editor-beside iframe surface ───────────────────────────────────
   controller = new EditorPanelController(context.extensionUri, output);
+  connection = new ServerConnection(context, controller, output);
+  context.subscriptions.push(connection);
 
   // ── Minimal activity-bar view (makes the container icon render) ────────────
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider(HOME_VIEW_ID, new HomeTreeProvider()),
   );
 
-  // ── omnigent.open command ──────────────────────────────────────────────────
+  // ── Commands ───────────────────────────────────────────────────────────────
   registerOpenPanel(context, controller);
+  registerConnect(context, connection, controller);
+  registerSignOut(context, connection);
 
-  // ── Resolve the local server at activation ────────────────────────────────
-  try {
-    const settings = readSettings();
-    const discovery = await discoverLocalServer(undefined, DEFAULT_HEALTH_TIMEOUT_MS);
-    const resolution = resolveServerTarget(settings, {
-      found: discovery.found,
-      baseUrl: discovery.found ? discovery.baseUrl : undefined,
-      health: discovery.found ? discovery.health : undefined,
-    });
-
-    if (resolution.status === "resolved") {
-      const target = resolution.target;
-      controller.setResolved(target);
-      output.appendLine(
-        `[omnigent] target: ${target.baseUrl} (hostType=${target.hostType}, source=${target.source})`,
-      );
-    } else {
-      output.appendLine(
-        `[omnigent] no local server (${resolution.reason}); start \`omnigent server\` or set omnigent.serverUrl to a localhost URL`,
-      );
-    }
-  } catch (err) {
-    output.appendLine(
-      `[omnigent] init error: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+  // ── Resolve the server now and whenever the setting changes ───────────────
+  const active = connection;
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("omnigent.serverUrl")) {
+        void active.refresh();
+      }
+    }),
+  );
+  void active.refresh();
 
   output.appendLine("[omnigent] ready");
 }
 
 export function deactivate(): void {
+  connection?.dispose();
+  connection = undefined;
   controller?.dispose();
   controller = undefined;
   output?.appendLine("[omnigent] deactivating");
