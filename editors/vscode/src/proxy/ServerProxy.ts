@@ -17,10 +17,16 @@ import * as https from "node:https";
 import * as zlib from "node:zlib";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
-import type { ProxyCredentials } from "../auth/credentials";
+import type { ProxyCredentials, TokenRejection } from "../auth/credentials";
 import type { ServerAuthMode } from "../servers/classify";
 import { rewriteIndexHtml } from "./indexRewrite";
-import { continueInBrowserPage, errorPage, signInPage, type ProxyPage } from "./pages";
+import {
+  continueInBrowserPage,
+  errorPage,
+  signInPage,
+  type ProxyPage,
+  type SignInPrompt,
+} from "./pages";
 
 /** The proxy's own endpoints, under the secret prefix. */
 export const CONTROL_PATH = "/__omnigent_vscode";
@@ -61,16 +67,25 @@ const RESPONSE_HEADERS_DROPPED = new Set([
   "x-frame-options",
 ]);
 
+/**
+ * A self-hosted server's sign-in mode, or `databricks-app`: an app behind the
+ * Databricks Apps edge, which takes a workspace token and refuses to forward
+ * requests without one.
+ */
+export type ProxyAuthMode = ServerAuthMode | "databricks-app";
+
 export interface ServerProxyOptions {
   /** Remote server URL: https origin plus optional mount path, no trailing slash. */
   serverUrl: string;
-  authMode: ServerAuthMode;
+  authMode: ProxyAuthMode;
   /** Session cookie names to capture (and strip) from the server's responses. */
   sessionCookies: readonly string[];
   credentials: ProxyCredentials;
   openExternal(url: string): Promise<unknown>;
   /** Shown on the proxy's own pages. Defaults to the server's host. */
   serverLabel?: string;
+  /** The sign-in page's wording; defaults to a browser sign-in. */
+  signInPrompt?: SignInPrompt;
   log?(message: string): void;
 }
 
@@ -95,14 +110,7 @@ export class ServerProxy {
     this.serverBasePath = this.remote.pathname.replace(/\/+$/, "");
     this.transport = this.remote.protocol === "https:" ? https : http;
     this.server = http.createServer((req, res) => {
-      void this.handleRequest(req, res).catch((error: unknown) => {
-        this.log(`request failed: ${describe(error)}`);
-        if (!res.headersSent) {
-          res.writeHead(500, { "content-type": "text/plain" }).end("Proxy error");
-        } else {
-          res.destroy();
-        }
-      });
+      void this.handleRequest(req, res).catch((error: unknown) => this.failRequest(res, error));
     });
     this.server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       void this.handleUpgrade(req, socket, head).catch((error: unknown) => {
@@ -199,24 +207,18 @@ export class ServerProxy {
       return;
     }
     const appPath = this.appPathOf(url.pathname);
-    if (this.options.authMode === "oidc" && req.method === "GET") {
+    const authMode = this.options.authMode;
+    if ((authMode === "oidc" || authMode === "databricks-app") && req.method === "GET") {
       if (appPath === "/auth/login") {
         req.resume();
         this.sendPage(
           res,
           200,
-          signInPage({
-            serverLabel: this.serverLabel,
-            controlPath: this.prefix + CONTROL_PATH,
-            returnTo: this.safeReturnTo(url.searchParams.get("return_to")),
-            generation: this.options.credentials.status().generation,
-            signedOut: url.searchParams.has("signed_out"),
-            nonce: nonce(),
-          }),
+          this.signInPageFor(url.searchParams.get("return_to"), url.searchParams.has("signed_out")),
         );
         return;
       }
-      if (appPath === "/auth/logout") {
+      if (authMode === "oidc" && appPath === "/auth/logout") {
         req.resume();
         await this.options.credentials.signOut();
         res
@@ -265,16 +267,26 @@ export class ServerProxy {
     res.writeHead(404, headers).end();
   }
 
+  /** Send a request to the server; `replay` resends a bodiless one whose token was refused. */
   private async forward(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     path: string,
+    replay = false,
   ): Promise<void> {
     const navigation = isNavigation(req.headers);
     const token = await this.options.credentials.bearerToken().catch(() => undefined);
     if (res.destroyed || this.closed) {
       return;
     }
+    const databricksApp = this.options.authMode === "databricks-app";
+    if (databricksApp && !token) {
+      // The Apps edge would only redirect to a sign-in the panel can't show.
+      req.resume();
+      this.sendSignInRequired(res, path, navigation);
+      return;
+    }
+    let superseded = false;
     let upstream: http.ClientRequest;
     try {
       upstream = this.upstreamRequest(
@@ -296,7 +308,7 @@ export class ServerProxy {
       }
     });
     upstream.on("error", (error) => {
-      if (res.destroyed) {
+      if (res.destroyed || superseded) {
         return;
       }
       this.log(`upstream error for ${req.method} ${redactQuery(path)}: ${describe(error)}`);
@@ -319,9 +331,69 @@ export class ServerProxy {
       }
     });
     upstream.on("response", (upstreamRes) => {
+      const rejection =
+        databricksApp && token
+          ? databricksTokenRejection(upstreamRes.statusCode ?? 502, upstreamRes.headers, navigation)
+          : undefined;
+      if (token && rejection) {
+        this.options.credentials.tokenRejected(token, rejection);
+        if (!replay && (req.method === "GET" || req.method === "HEAD")) {
+          superseded = true;
+          upstreamRes.resume();
+          void this.forward(req, res, path, true).catch((error: unknown) =>
+            this.failRequest(res, error),
+          );
+          return;
+        }
+        if (rejection === "sign-in") {
+          upstreamRes.resume();
+          this.sendSignInRequired(res, path, navigation);
+          return;
+        }
+      }
       this.relayResponse(req, res, upstreamRes, path, navigation);
     });
-    req.pipe(upstream);
+    if (replay) {
+      upstream.end();
+    } else {
+      req.pipe(upstream);
+    }
+  }
+
+  /** A navigation gets the sign-in page; the app's own requests get a 401 that leads there. */
+  private sendSignInRequired(res: http.ServerResponse, path: string, navigation: boolean): void {
+    if (navigation) {
+      this.sendPage(res, 200, this.signInPageFor(path, false));
+      return;
+    }
+    res.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" }).end(
+      JSON.stringify({
+        detail: "Sign in again from the Omnigent panel.",
+        user_id: null,
+        login_url: "/auth/login",
+      }),
+    );
+  }
+
+  private signInPageFor(returnTo: string | null, signedOut: boolean): ProxyPage {
+    return signInPage({
+      serverLabel: this.serverLabel,
+      controlPath: this.prefix + CONTROL_PATH,
+      returnTo: this.safeReturnTo(returnTo),
+      generation: this.options.credentials.status().generation,
+      signedOut,
+      prompt: this.options.signInPrompt,
+      nonce: nonce(),
+    });
+  }
+
+  private failRequest(res: http.ServerResponse, error: unknown): void {
+    this.log(`request failed: ${describe(error)}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { "content-type": "text/plain" }).end("Proxy error");
+    } else {
+      res.destroy();
+    }
   }
 
   private relayResponse(
@@ -431,6 +503,11 @@ export class ServerProxy {
       socket.destroy();
       return;
     }
+    const databricksApp = this.options.authMode === "databricks-app";
+    if (databricksApp && !token) {
+      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      return;
+    }
     let upstream: http.ClientRequest;
     try {
       upstream = this.upstreamRequest(
@@ -472,6 +549,14 @@ export class ServerProxy {
     upstream.on("response", (upstreamRes) => {
       // Refused upgrade: relay the answer and close, since the body framing was dropped.
       this.captureSessionCookies(upstreamRes.headers["set-cookie"]);
+      const rejection =
+        databricksApp && token
+          ? databricksTokenRejection(upstreamRes.statusCode ?? 502, upstreamRes.headers, false)
+          : undefined;
+      if (token && rejection) {
+        // The app reconnects on its own, by then with a fresh token.
+        this.options.credentials.tokenRejected(token, rejection);
+      }
       socket.write(
         statusLine(upstreamRes) +
           rawHeaderLines(upstreamRes.rawHeaders, false) +
@@ -729,6 +814,42 @@ export function isNavigation(headers: http.IncomingHttpHeaders): boolean {
     return mode === "navigate";
   }
   return String(headers.accept ?? "").includes("text/html");
+}
+
+/**
+ * Whether the Databricks Apps edge refused a request's token. Pure.
+ *
+ * A 401, or a redirect into the workspace's OAuth flow (`/oidc/…`, the edge's
+ * `/.auth/…`), means the token no longer signs in. The edge's 403 answers both
+ * a dead token and a user without access to the app; the app's own 403s are
+ * JSON, and never answer a page load.
+ */
+export function databricksTokenRejection(
+  status: number,
+  headers: http.IncomingHttpHeaders,
+  navigation: boolean,
+): TokenRejection | undefined {
+  if (status === 401) {
+    return "sign-in";
+  }
+  if (status === 403) {
+    const json = String(headers["content-type"] ?? "")
+      .toLowerCase()
+      .includes("json");
+    return navigation || !json ? "forbidden" : undefined;
+  }
+  if (status >= 300 && status < 400 && typeof headers.location === "string") {
+    let target: URL;
+    try {
+      target = new URL(headers.location, "https://app.invalid");
+    } catch {
+      return undefined;
+    }
+    return target.pathname.startsWith("/oidc/") || target.pathname.startsWith("/.auth/")
+      ? "sign-in"
+      : undefined;
+  }
+  return undefined;
 }
 
 /** A root-absolute path on the same origin (not `//host` or `/\host`). */

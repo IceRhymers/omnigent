@@ -9,6 +9,7 @@
  */
 import {
   isDatabricksManagedServerUrl,
+  isDatabricksOAuthServerUrl,
   parseManifestAuth,
   sanitizeServerName,
 } from "../../../../web/electron/src/url.js";
@@ -137,6 +138,57 @@ export function profileFromIdentityProbe(
     return { ...base, authMode, sessionCookies: [] };
   }
   return null;
+}
+
+export type WorkspaceLookup =
+  | { status: "found"; workspaceOrigin: string }
+  | { status: "unknown" }
+  | { status: "unreachable"; detail: string };
+
+/**
+ * Find the workspace a Databricks App signs in through: its edge redirects an
+ * unauthenticated request to that workspace's OAuth sign-in. Never throws.
+ */
+export async function findDatabricksWorkspace(
+  appUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<WorkspaceLookup> {
+  try {
+    // A browser-like Accept, so the edge answers with its sign-in redirect.
+    const probe = await requestJson(
+      serverEndpoint(appUrl, "/v1/me"),
+      { headers: { Accept: "*/*" }, timeoutMs: MANIFEST_TIMEOUT_MS },
+      fetchImpl,
+    );
+    const workspaceOrigin = workspaceFromSignInRedirect(
+      probe.status,
+      probe.headers.get("location"),
+    );
+    return workspaceOrigin ? { status: "found", workspaceOrigin } : { status: "unknown" };
+  } catch (error) {
+    const detail = error instanceof NetworkError ? error.message : String(error);
+    return { status: "unreachable", detail };
+  }
+}
+
+/** The workspace origin of a redirect to a Databricks `/oidc/` endpoint. Pure. */
+export function workspaceFromSignInRedirect(
+  status: number,
+  location: string | null,
+): string | undefined {
+  if (status < 300 || status >= 400 || !location) {
+    return undefined;
+  }
+  let target: URL;
+  try {
+    target = new URL(location);
+  } catch {
+    return undefined;
+  }
+  if (!target.pathname.startsWith("/oidc/") || !isDatabricksOAuthServerUrl(target.origin)) {
+    return undefined;
+  }
+  return target.origin;
 }
 
 function cookieNamesFor(serverUrl: string): string[] {

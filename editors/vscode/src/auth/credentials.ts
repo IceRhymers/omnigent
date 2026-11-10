@@ -40,11 +40,19 @@ export interface SignInStatus {
   userCode?: string;
 }
 
+/**
+ * How a server refused a token: `sign-in` means the token is no longer valid;
+ * `forbidden` can also mean the user lacks access, so the token isn't ruled out.
+ */
+export type TokenRejection = "sign-in" | "forbidden";
+
 /** What the proxy needs from a credential source. */
 export interface ProxyCredentials {
   bearerToken(): Promise<string | undefined>;
   acceptSessionCookie(token: string, maxAgeSeconds: number | undefined): void;
   sessionCookieCleared(): void;
+  /** The server refused this token; don't reuse the cached copy. */
+  tokenRejected(token: string, rejection: TokenRejection): void;
   startSignIn(): void;
   signOut(): Promise<void>;
   status(): SignInStatus;
@@ -59,6 +67,8 @@ export interface ServerCredentialsOptions {
   revoke(refreshToken: string): Promise<void>;
   /** Interactive browser sign-in; absent when the server signs in inside the panel. */
   signIn?(signal: AbortSignal, onUserCode: (code: string) => void): Promise<SessionCredential>;
+  /** Told when the server refuses a token, so the CLI source can drop it too. */
+  onTokenRejected?(token: string, rejection: TokenRejection): void;
   now?(): number;
   log?(message: string): void;
 }
@@ -113,6 +123,26 @@ export class ServerCredentials implements ProxyCredentials {
 
   sessionCookieCleared(): void {
     void this.forget();
+  }
+
+  tokenRejected(token: string, rejection: TokenRejection): void {
+    const own = this.own;
+    if (own?.token === token) {
+      if (own.refreshToken) {
+        // Renew on next use; a dead grant then clears the session.
+        this.own = { ...own, expiresAt: this.now() };
+      } else {
+        this.own = undefined;
+        void this.options.vault.delete(this.serverUrl).catch(() => undefined);
+      }
+    }
+    if (this.cliCache?.session?.token === token) {
+      this.cliCache = undefined;
+    }
+    if (this.cliRenewed?.token === token) {
+      this.cliRenewed = undefined;
+    }
+    this.options.onTokenRejected?.(token, rejection);
   }
 
   startSignIn(): void {

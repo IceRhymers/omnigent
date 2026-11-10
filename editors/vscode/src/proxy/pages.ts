@@ -38,6 +38,17 @@ const STYLE = `
   }
 `;
 
+/** The sign-in page's wording for one kind of server. */
+export interface SignInPrompt {
+  detail: string;
+  button: string;
+}
+
+export const BROWSER_SIGN_IN_PROMPT: SignInPrompt = {
+  detail: "This server signs you in through your web browser.",
+  button: "Sign in with browser",
+};
+
 export interface SignInPageOptions {
   serverLabel: string;
   /** Absolute path of the proxy's control endpoints. */
@@ -47,12 +58,14 @@ export interface SignInPageOptions {
   /** The sign-in generation this page waits to see increase. */
   generation: number;
   signedOut?: boolean;
+  prompt?: SignInPrompt;
   nonce: string;
 }
 
 /** "Sign in with your browser" — polls the proxy until a new sign-in lands. */
 export function signInPage(options: SignInPageOptions): ProxyPage {
   const heading = options.signedOut ? "You're signed out" : "Sign in to continue";
+  const prompt = options.prompt ?? BROWSER_SIGN_IN_PROMPT;
   const config = scriptJson({
     control: options.controlPath,
     returnTo: options.returnTo,
@@ -65,10 +78,10 @@ export function signInPage(options: SignInPageOptions): ProxyPage {
     body: `
     <h1>${escapeHtml(heading)}</h1>
     <p class="server">${escapeHtml(options.serverLabel)}</p>
-    <p id="status">This server signs you in through your web browser.</p>
+    <p id="status">${escapeHtml(prompt.detail)}</p>
     <p id="code" class="code" hidden></p>
     <p id="error" class="error" hidden></p>
-    <button id="sign-in" type="button">Sign in with browser</button>`,
+    <button id="sign-in" type="button">${escapeHtml(prompt.button)}</button>`,
     script: `
     const config = ${config};
     const button = document.getElementById("sign-in");

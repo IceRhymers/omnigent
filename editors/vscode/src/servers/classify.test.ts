@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  findDatabricksWorkspace,
   probeServer,
   profileFromIdentityProbe,
   profileFromManifest,
   remoteServerKind,
+  workspaceFromSignInRedirect,
 } from "./classify";
 
 const SERVER = "https://omnigent.example.com";
@@ -75,6 +77,55 @@ describe("profileFromIdentityProbe", () => {
   it("returns null for answers that aren't an Omnigent server's", () => {
     expect(profileFromIdentityProbe(401, { detail: "no" }, SERVER)).toBeNull();
     expect(profileFromIdentityProbe(200, null, SERVER)).toBeNull();
+  });
+});
+
+describe("workspaceFromSignInRedirect", () => {
+  const AUTHORIZE = "https://dbc-1.cloud.databricks.com/oidc/oauth2/v2.0/authorize?client_id=x";
+
+  it("reads the workspace from a redirect to its OAuth sign-in", () => {
+    expect(workspaceFromSignInRedirect(302, AUTHORIZE)).toBe("https://dbc-1.cloud.databricks.com");
+  });
+
+  it.each([
+    [200, AUTHORIZE],
+    [302, null],
+    [302, "/oidc/oauth2/v2.0/authorize"],
+    [302, "https://dbc-1.cloud.databricks.com/login.html"],
+    [302, "https://evil.example.com/oidc/oauth2/v2.0/authorize"],
+    [302, "http://dbc-1.cloud.databricks.com/oidc/oauth2/v2.0/authorize"],
+  ])("ignores %i to %s", (status, location) => {
+    expect(workspaceFromSignInRedirect(status, location)).toBeUndefined();
+  });
+});
+
+describe("findDatabricksWorkspace", () => {
+  const APP = "https://my-app-1.aws.databricksapps.com";
+
+  it("asks the app's edge without credentials and follows nothing", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://dbc-1.cloud.databricks.com/oidc/oauth2/v2.0/authorize" },
+        }),
+    ) as unknown as typeof fetch;
+    expect(await findDatabricksWorkspace(APP, fetchImpl)).toEqual({
+      status: "found",
+      workspaceOrigin: "https://dbc-1.cloud.databricks.com",
+    });
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0];
+    expect(String(url)).toBe(`${APP}/v1/me`);
+    expect(init).toMatchObject({ redirect: "manual", headers: { Accept: "*/*" } });
+  });
+
+  it("tells an app without a sign-in redirect from one that can't be reached", async () => {
+    const open = vi.fn(async () => json(200, { user_id: "u" })) as unknown as typeof fetch;
+    expect(await findDatabricksWorkspace(APP, open)).toEqual({ status: "unknown" });
+    const down = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    expect(await findDatabricksWorkspace(APP, down)).toMatchObject({ status: "unreachable" });
   });
 });
 
