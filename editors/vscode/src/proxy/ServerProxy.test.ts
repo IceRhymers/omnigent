@@ -7,9 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as http from "node:http";
 import * as zlib from "node:zlib";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import type { ProxyCredentials, SignInStatus } from "../auth/credentials";
+import { LocalApp } from "./localApp";
 import {
   CONTROL_PATH,
   ServerProxy,
@@ -122,6 +126,7 @@ async function startProxy(
     authMode?: ProxyAuthMode;
     token?: string;
     signInPrompt?: SignInPrompt;
+    localApp?: LocalApp;
   } = {},
 ) {
   credentials = fakeCredentials(overrides.token);
@@ -132,6 +137,7 @@ async function startProxy(
     credentials,
     openExternal,
     signInPrompt: overrides.signInPrompt,
+    localApp: overrides.localApp,
   });
   return proxy;
 }
@@ -531,6 +537,161 @@ describe("ServerProxy Databricks Apps", () => {
     expect(JSON.parse(reply.text)).toMatchObject({ login_url: "/auth/login" });
     expect(upstream.received).toHaveLength(1);
     expect(credentials.tokenRejected).toHaveBeenCalledWith("t", "sign-in");
+  });
+});
+
+describe("ServerProxy Databricks workspace", () => {
+  const API = "/api/2.0/omnigent";
+  const INDEX =
+    '<html><head><base href="/" /><script type="module" src="./assets/app-1.js"></script>' +
+    "</head><body></body></html>";
+  let appDir: string;
+  let app: LocalApp;
+
+  beforeEach(async () => {
+    appDir = await mkdtemp(join(tmpdir(), "omnigent-proxy-app-"));
+    await mkdir(join(appDir, "assets"));
+    await writeFile(join(appDir, "index.html"), INDEX);
+    await writeFile(join(appDir, "assets", "app-1.js"), "console.log(1);");
+    await writeFile(join(appDir, "favicon.svg"), "<svg/>");
+    app = (await LocalApp.load(appDir)) as LocalApp;
+  });
+
+  afterEach(async () => {
+    await rm(appDir, { recursive: true, force: true });
+  });
+
+  const startWorkspace = (token?: string) =>
+    startProxy({ path: API, authMode: "databricks-workspace", token, localApp: app });
+
+  it("serves the bundled app shell under the API mount, rebased, for any page load", async () => {
+    const p = await startWorkspace("t");
+    expect(p.entryUrl).toBe(`${p.origin}${p.prefix}${API}/`);
+    for (const page of [`${p.prefix}${API}/`, `${p.prefix}${API}/c/42?tab=1`]) {
+      const reply = await send(p, page, { headers: NAVIGATE });
+      expect(reply.status).toBe(200);
+      expect(reply.headers["cache-control"]).toBe("no-store");
+      expect(reply.text).toContain(`window.__OMNIGENT_BASE_PATH__ = "${p.prefix}${API}"`);
+      expect(reply.text).toContain(`src="${p.prefix}${API}/assets/app-1.js"`);
+      expect(reply.text).not.toContain("<base");
+    }
+    expect(upstream.received).toHaveLength(0);
+  });
+
+  it("serves bundle files, and 404s anything else that isn't the server's", async () => {
+    const p = await startWorkspace("t");
+    const asset = await send(p, `${p.prefix}${API}/assets/app-1.js`);
+    expect(asset.status).toBe(200);
+    expect(asset.text).toBe("console.log(1);");
+    expect(asset.headers["content-type"]).toBe("text/javascript; charset=utf-8");
+    expect(asset.headers["cache-control"]).toContain("immutable");
+    const icon = await send(p, `${p.prefix}${API}/favicon.svg`, { method: "HEAD" });
+    expect(icon.status).toBe(200);
+    expect(icon.headers["content-length"]).toBe("6");
+    expect(icon.headers["cache-control"]).toBe("no-cache");
+    expect((await send(p, `${p.prefix}${API}/assets/gone.js`)).status).toBe(404);
+    expect((await send(p, `${p.prefix}${API}/c/42`)).status).toBe(404);
+    expect((await send(p, `${p.prefix}${API}/c/42`, { method: "POST" })).status).toBe(404);
+    expect(upstream.received).toHaveLength(0);
+  });
+
+  it("sends only the API mount to the workspace, with the token", async () => {
+    const p = await startWorkspace("ws-token");
+    await send(p, `${p.prefix}${API}/v1/me`, { headers: { origin: p.origin } });
+    const seen = upstream.received[0];
+    expect(seen.url).toBe(`${API}/v1/me`);
+    expect(seen.headers.authorization).toBe("Bearer ws-token");
+    expect(seen.headers.origin).toBe(upstream.url);
+
+    const outside = await send(p, `${p.prefix}/api/2.0/clusters/list`);
+    expect(outside.status).toBe(404);
+    const home = await send(p, `${p.prefix}/`, { headers: NAVIGATE });
+    expect(home.status).toBe(302);
+    expect(home.headers.location).toBe(`${p.prefix}${API}/`);
+    expect(upstream.received).toHaveLength(1);
+  });
+
+  it("asks for a sign-in without a token, before the app loads", async () => {
+    const p = await startWorkspace();
+    const page = await send(p, `${p.prefix}${API}/c/42`, { headers: NAVIGATE });
+    expect(page.status).toBe(200);
+    expect(page.text).toContain("Sign in to continue");
+    expect(/"returnTo":"([^"]*)"/.exec(page.text)?.[1]).toBe(`${p.prefix}${API}/c/42`);
+    const api = await send(p, `${p.prefix}${API}/v1/me`);
+    expect(api.status).toBe(401);
+    expect(JSON.parse(api.text)).toMatchObject({ login_url: "/auth/login" });
+    // Assets don't need a sign-in, so the sign-in page itself can load them.
+    expect((await send(p, `${p.prefix}${API}/favicon.svg`)).status).toBe(200);
+    expect(upstream.received).toHaveLength(0);
+  });
+
+  it("retries once with a fresh token when the workspace refuses one", async () => {
+    upstream.setHandler((req, res) => {
+      if (req.headers.authorization === "Bearer stale") {
+        res
+          .writeHead(401, { "www-authenticate": 'Bearer realm="DatabricksRealm"' })
+          .end("Unauthorized");
+      } else {
+        res.writeHead(200, { "content-type": "application/json" }).end('{"user_id":"me"}');
+      }
+    });
+    const p = await startWorkspace("fresh");
+    credentials.bearerToken.mockResolvedValueOnce("stale");
+    const reply = await send(p, `${p.prefix}${API}/v1/me`);
+    expect(reply.status).toBe(200);
+    expect(credentials.tokenRejected).toHaveBeenCalledWith("stale", "sign-in");
+    expect(upstream.received.map((req) => req.headers.authorization)).toEqual([
+      "Bearer stale",
+      "Bearer fresh",
+    ]);
+  });
+
+  it("serves the sign-in page and signs out locally", async () => {
+    const p = await startWorkspace("t");
+    const login = await send(p, `${p.prefix}${API}/auth/login`, { headers: NAVIGATE });
+    expect(login.text).toContain("Sign in to continue");
+    const logout = await send(p, `${p.prefix}${API}/auth/logout`, { headers: NAVIGATE });
+    expect(credentials.signOut).toHaveBeenCalledTimes(1);
+    expect(logout.status).toBe(302);
+    expect(logout.headers.location).toBe(`${p.prefix}${API}/auth/login?signed_out=1`);
+    expect(upstream.received).toHaveLength(0);
+  });
+
+  it("tunnels the API's WebSockets and refuses any other upgrade", async () => {
+    upstream.setUpgradeHandler((_req, socket) => {
+      socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+      );
+    });
+    const p = await startWorkspace("ws-token");
+    const tunnel = await new Promise<http.IncomingMessage>((resolve, reject) => {
+      const req = http.request(`${p.origin}${p.prefix}${API}/v1/sessions/s1/updates`, {
+        agent: false,
+        headers: { connection: "Upgrade", upgrade: "websocket", origin: p.origin },
+      });
+      req.on("error", reject);
+      req.on("upgrade", (res, socket) => {
+        socket.destroy();
+        resolve(res);
+      });
+      req.on("response", resolve);
+      req.end();
+    });
+    expect(tunnel.statusCode).toBe(101);
+    expect(upstream.received[0].url).toBe(`${API}/v1/sessions/s1/updates`);
+    expect(upstream.received[0].headers.authorization).toBe("Bearer ws-token");
+
+    const refused = await new Promise<http.IncomingMessage>((resolve, reject) => {
+      const req = http.request(`${p.origin}${p.prefix}${API}/c/1`, {
+        agent: false,
+        headers: { connection: "Upgrade", upgrade: "websocket" },
+      });
+      req.on("error", reject);
+      req.on("response", resolve);
+      req.end();
+    });
+    expect(refused.statusCode).toBe(404);
+    expect(upstream.received).toHaveLength(1);
   });
 });
 

@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   findDatabricksWorkspace,
   probeServer,
+  probeWorkspace,
   profileFromIdentityProbe,
   profileFromManifest,
   remoteServerKind,
   workspaceFromSignInRedirect,
+  workspaceOmnigent,
 } from "./classify";
 
 const SERVER = "https://omnigent.example.com";
@@ -24,6 +26,65 @@ describe("remoteServerKind", () => {
     ["https://dbc-abc.cloud.databricks.com/omnigent", "databricks-workspace"],
   ])("%s is %s", (url, kind) => {
     expect(remoteServerKind(url)).toBe(kind);
+  });
+});
+
+describe("workspaceOmnigent", () => {
+  const WS = "https://dbc-abc.cloud.databricks.com";
+  const urls = {
+    workspaceOrigin: WS,
+    apiUrl: `${WS}/api/2.0/omnigent`,
+    pageUrl: `${WS}/omnigent`,
+  };
+
+  it.each([
+    WS,
+    `${WS}/`,
+    `${WS}/omnigent`,
+    `${WS}/omnigent/c/42`,
+    `${WS}/api/2.0/omnigent`,
+    `${WS}/api/2.0/omnigents`,
+  ])("maps %s to the workspace's API and page", (url) => {
+    expect(workspaceOmnigent(url)).toEqual(urls);
+  });
+
+  it.each([`${WS}/sql/editor`, `${WS}/omnigentx`, `${WS}/api/2.0/clusters`])(
+    "doesn't map %s",
+    (url) => {
+      expect(workspaceOmnigent(url)).toBeNull();
+    },
+  );
+});
+
+describe("probeWorkspace", () => {
+  const API = "https://dbc-abc.cloud.databricks.com/api/2.0/omnigent";
+
+  it("recognizes the workspace's sign-in challenge", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("", {
+          status: 401,
+          headers: { "www-authenticate": 'Bearer realm="DatabricksRealm"' },
+        }),
+    );
+    expect(await probeWorkspace(API, fetchImpl)).toEqual({
+      status: "ok",
+      httpStatus: 401,
+      databricksRealm: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(`${API}/v1/me`, expect.anything());
+  });
+
+  it("reports other answers, and a network failure as unreachable", async () => {
+    expect(await probeWorkspace(API, async () => new Response("", { status: 404 }))).toEqual({
+      status: "ok",
+      httpStatus: 404,
+      databricksRealm: false,
+    });
+    const failing = async () => {
+      throw new TypeError("fetch failed");
+    };
+    expect(await probeWorkspace(API, failing)).toMatchObject({ status: "unreachable" });
   });
 });
 
