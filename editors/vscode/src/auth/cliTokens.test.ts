@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { cliSessionFrom, cliTokensPath, readCliSession } from "./cliTokens";
+import {
+  cliSessionFrom,
+  cliTokensPath,
+  cliWorkspaceFrom,
+  readCliSession,
+  readCliWorkspace,
+} from "./cliTokens";
 
 describe("cliTokensPath", () => {
   it("uses OMNIGENT_DATA_DIR, expanding ~, else ~/.omnigent", () => {
@@ -42,12 +48,33 @@ describe("cliSessionFrom", () => {
   });
 });
 
+describe("cliWorkspaceFrom", () => {
+  const APP = "https://my-app-1.aws.databricksapps.com";
+  const pointer = (workspaceHost: unknown) => ({
+    [APP]: { auth_type: "databricks", workspace_host: workspaceHost },
+  });
+
+  it("reads the workspace a Databricks App login recorded", () => {
+    expect(cliWorkspaceFrom(pointer("https://dbc-1.cloud.databricks.com"), `${APP}/`)).toBe(
+      "https://dbc-1.cloud.databricks.com",
+    );
+  });
+
+  it("ignores other records and hosts that aren't Databricks workspaces", () => {
+    expect(cliWorkspaceFrom(pointer("https://evil.example.com"), APP)).toBeUndefined();
+    expect(cliWorkspaceFrom(pointer("dbc-1.cloud.databricks.com"), APP)).toBeUndefined();
+    expect(cliWorkspaceFrom(pointer(42), APP)).toBeUndefined();
+    expect(cliWorkspaceFrom({ [APP]: { token: "jwt" } }, APP)).toBeUndefined();
+  });
+});
+
 describe("readCliSession", () => {
   it("reads the file and treats a missing or corrupt file as nothing stored", async () => {
     const dir = await mkdtemp(join(tmpdir(), "omnigent-cli-tokens-"));
     try {
       const path = join(dir, "auth_tokens.json");
       expect(await readCliSession("https://omnigent.example.com", path)).toBeUndefined();
+      expect(await readCliWorkspace("https://omnigent.example.com", path)).toBeUndefined();
       await writeFile(path, JSON.stringify({ "https://omnigent.example.com": { token: "t" } }));
       expect(await readCliSession("https://omnigent.example.com", path)).toEqual({ token: "t" });
       await writeFile(path, "{not json");

@@ -1,7 +1,8 @@
 /**
  * ServerProxy against a real loopback "remote" server: admission checks,
  * header rewriting, cookie capture, HTML rebasing, streaming, the OIDC
- * sign-in intercepts, control endpoints, and WebSocket tunnelling.
+ * sign-in intercepts, Databricks Apps token refusals, control endpoints, and
+ * WebSocket tunnelling.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as http from "node:http";
@@ -9,7 +10,15 @@ import * as zlib from "node:zlib";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import type { ProxyCredentials, SignInStatus } from "../auth/credentials";
-import { CONTROL_PATH, ServerProxy, isNavigation, sessionCookieEvents } from "./ServerProxy";
+import {
+  CONTROL_PATH,
+  ServerProxy,
+  databricksTokenRejection,
+  isNavigation,
+  sessionCookieEvents,
+  type ProxyAuthMode,
+} from "./ServerProxy";
+import type { SignInPrompt } from "./pages";
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse) => void;
 type UpgradeHandler = (req: http.IncomingMessage, socket: Duplex) => void;
@@ -59,6 +68,7 @@ function fakeCredentials(token?: string) {
     bearerToken: vi.fn(async () => token),
     acceptSessionCookie: vi.fn(),
     sessionCookieCleared: vi.fn(),
+    tokenRejected: vi.fn(),
     startSignIn: vi.fn(() => {
       status = { ...status, inProgress: true };
     }),
@@ -107,7 +117,12 @@ let credentials: ReturnType<typeof fakeCredentials>;
 const openExternal = vi.fn(async () => true);
 
 async function startProxy(
-  overrides: { path?: string; authMode?: "oidc" | "accounts" | "none"; token?: string } = {},
+  overrides: {
+    path?: string;
+    authMode?: ProxyAuthMode;
+    token?: string;
+    signInPrompt?: SignInPrompt;
+  } = {},
 ) {
   credentials = fakeCredentials(overrides.token);
   proxy = await ServerProxy.start({
@@ -116,6 +131,7 @@ async function startProxy(
     sessionCookies: ["ap_session"],
     credentials,
     openExternal,
+    signInPrompt: overrides.signInPrompt,
   });
   return proxy;
 }
@@ -402,6 +418,145 @@ describe("ServerProxy OIDC sign-in", () => {
   });
 });
 
+describe("ServerProxy Databricks Apps", () => {
+  const WORKSPACE_SIGN_IN = "https://dbc-1.cloud.databricks.com/oidc/oauth2/v2.0/authorize?x=1";
+  const returnToOf = (html: string) => /"returnTo":"([^"]*)"/.exec(html)?.[1];
+
+  it("asks for a sign-in without a token instead of contacting the app", async () => {
+    const p = await startProxy({ authMode: "databricks-app" });
+    const page = await send(p, `${p.prefix}/c/42?tab=1`, { headers: NAVIGATE });
+    expect(page.status).toBe(200);
+    expect(page.text).toContain("Sign in to continue");
+    expect(returnToOf(page.text)).toBe(`${p.prefix}/c/42?tab=1`);
+    const api = await send(p, `${p.prefix}/v1/me`);
+    expect(api.status).toBe(401);
+    expect(JSON.parse(api.text)).toMatchObject({ user_id: null, login_url: "/auth/login" });
+    expect(upstream.received).toHaveLength(0);
+  });
+
+  it("serves the sign-in page at /auth/login with its prompt, and forwards /auth/logout", async () => {
+    const p = await startProxy({
+      authMode: "databricks-app",
+      token: "t",
+      signInPrompt: { detail: "Use your Databricks account.", button: "Sign in with Databricks" },
+    });
+    const page = await send(
+      p,
+      `${p.prefix}/auth/login?${new URLSearchParams({ return_to: `${p.prefix}/c/1` })}`,
+      { headers: NAVIGATE },
+    );
+    expect(page.text).toContain("Use your Databricks account.");
+    expect(page.text).toContain("Sign in with Databricks");
+    expect(returnToOf(page.text)).toBe(`${p.prefix}/c/1`);
+    expect(upstream.received).toHaveLength(0);
+    await send(p, `${p.prefix}/auth/logout`, { headers: NAVIGATE });
+    expect(upstream.received[0].url).toBe("/auth/logout");
+    expect(credentials.signOut).not.toHaveBeenCalled();
+  });
+
+  it("retries once with a fresh token when the edge sends a request to the workspace sign-in", async () => {
+    upstream.setHandler((req, res) => {
+      if (req.headers.authorization === "Bearer stale") {
+        res.writeHead(302, { location: WORKSPACE_SIGN_IN }).end();
+      } else {
+        res.writeHead(200, { "content-type": "text/plain" }).end("app");
+      }
+    });
+    const p = await startProxy({ authMode: "databricks-app", token: "fresh" });
+    credentials.bearerToken.mockResolvedValueOnce("stale");
+    const reply = await send(p, `${p.prefix}/v1/sessions`);
+    expect(reply.status).toBe(200);
+    expect(reply.text).toBe("app");
+    expect(credentials.tokenRejected).toHaveBeenCalledWith("stale", "sign-in");
+    expect(upstream.received.map((req) => req.headers.authorization)).toEqual([
+      "Bearer stale",
+      "Bearer fresh",
+    ]);
+  });
+
+  it("asks for a sign-in when the fresh token is refused too", async () => {
+    upstream.setHandler((_req, res) => res.writeHead(401, { "content-type": "text/plain" }).end());
+    const p = await startProxy({ authMode: "databricks-app", token: "dead" });
+    const page = await send(p, `${p.prefix}/`, { headers: NAVIGATE });
+    expect(page.status).toBe(200);
+    expect(page.text).toContain("Sign in to continue");
+    const api = await send(p, `${p.prefix}/v1/me`);
+    expect(api.status).toBe(401);
+    expect(JSON.parse(api.text)).toMatchObject({ login_url: "/auth/login" });
+    expect(upstream.received).toHaveLength(4);
+    expect(credentials.tokenRejected).toHaveBeenCalledTimes(4);
+  });
+
+  it("relays the edge's 403 after one retry, since it can mean the user lacks access", async () => {
+    upstream.setHandler((_req, res) =>
+      res.writeHead(403, { "content-type": "text/html" }).end("<p>no access</p>"),
+    );
+    const p = await startProxy({ authMode: "databricks-app", token: "valid" });
+    const reply = await send(p, `${p.prefix}/`, { headers: NAVIGATE });
+    expect(reply.status).toBe(403);
+    expect(reply.text).toContain("no access");
+    expect(upstream.received).toHaveLength(2);
+    expect(credentials.tokenRejected).toHaveBeenCalledWith("valid", "forbidden");
+  });
+
+  it("passes the app's own JSON 403s and redirects through untouched", async () => {
+    upstream.setHandler((req, res) => {
+      if (req.url === "/v1/sessions/x") {
+        res.writeHead(403, { "content-type": "application/json" }).end('{"detail":"not yours"}');
+      } else {
+        res.writeHead(302, { location: "/c/1" }).end();
+      }
+    });
+    const p = await startProxy({ authMode: "databricks-app", token: "t" });
+    expect((await send(p, `${p.prefix}/v1/sessions/x`)).status).toBe(403);
+    const moved = await send(p, `${p.prefix}/old`, { headers: NAVIGATE });
+    expect(moved.status).toBe(302);
+    expect(moved.headers.location).toBe(`${p.prefix}/c/1`);
+    expect(upstream.received).toHaveLength(2);
+    expect(credentials.tokenRejected).not.toHaveBeenCalled();
+  });
+
+  it("doesn't resend a request body; the app gets a 401 that leads to the sign-in", async () => {
+    upstream.setHandler((req, res) => {
+      req.resume();
+      res.writeHead(302, { location: WORKSPACE_SIGN_IN }).end();
+    });
+    const p = await startProxy({ authMode: "databricks-app", token: "t" });
+    const reply = await send(p, `${p.prefix}/v1/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: p.origin },
+      body: "{}",
+    });
+    expect(reply.status).toBe(401);
+    expect(JSON.parse(reply.text)).toMatchObject({ login_url: "/auth/login" });
+    expect(upstream.received).toHaveLength(1);
+    expect(credentials.tokenRejected).toHaveBeenCalledWith("t", "sign-in");
+  });
+});
+
+describe("databricksTokenRejection", () => {
+  it("reads 401s and redirects into the workspace sign-in as dead tokens", () => {
+    expect(databricksTokenRejection(401, {}, false)).toBe("sign-in");
+    const oidc = "https://dbc-1.cloud.databricks.com/oidc/oauth2/v2.0/authorize?x=1";
+    expect(databricksTokenRejection(302, { location: oidc }, true)).toBe("sign-in");
+    expect(databricksTokenRejection(307, { location: "/.auth/callback" }, false)).toBe("sign-in");
+    expect(databricksTokenRejection(302, { location: "/c/1" }, true)).toBeUndefined();
+    expect(databricksTokenRejection(200, {}, true)).toBeUndefined();
+  });
+
+  it("reads the edge's 403s as forbidden, but not the app's JSON 403s to its own requests", () => {
+    expect(databricksTokenRejection(403, { "content-type": "text/plain" }, false)).toBe(
+      "forbidden",
+    );
+    expect(databricksTokenRejection(403, { "content-type": "application/json" }, true)).toBe(
+      "forbidden",
+    );
+    expect(
+      databricksTokenRejection(403, { "content-type": "application/json" }, false),
+    ).toBeUndefined();
+  });
+});
+
 describe("ServerProxy control endpoints", () => {
   it("reports sign-in status and starts a sign-in", async () => {
     const p = await startProxy({ authMode: "oidc" });
@@ -507,6 +662,26 @@ describe("ServerProxy WebSockets", () => {
     expect(result.res.statusCode).toBe(403);
     expect(result.res.headers["set-cookie"]).toBeUndefined();
     expect(result.body).toBe("denied");
+  });
+
+  it("refuses a Databricks App upgrade without a token before contacting the app", async () => {
+    const p = await startProxy({ authMode: "databricks-app" });
+    const result = await upgrade(p, `${p.prefix}/v1/terminal`, { origin: p.origin });
+    expect(result.res.statusCode).toBe(401);
+    expect(upstream.received).toHaveLength(0);
+  });
+
+  it("reports a Databricks App upgrade refused for its token, so the reconnect mints anew", async () => {
+    upstream.setUpgradeHandler((_req, socket) => {
+      socket.end(
+        "HTTP/1.1 302 Found\r\nLocation: https://dbc-1.cloud.databricks.com/oidc/v1/authorize\r\n" +
+          "Content-Length: 0\r\n\r\n",
+      );
+    });
+    const p = await startProxy({ authMode: "databricks-app", token: "stale" });
+    const result = await upgrade(p, `${p.prefix}/v1/terminal`, { origin: p.origin });
+    expect(result.res.statusCode).toBe(302);
+    expect(credentials.tokenRejected).toHaveBeenCalledWith("stale", "sign-in");
   });
 
   it("refuses an upgrade from another origin before contacting the server", async () => {

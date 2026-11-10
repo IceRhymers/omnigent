@@ -284,6 +284,47 @@ describe("ServerCredentials browser sign-in", () => {
   });
 });
 
+describe("ServerCredentials refused tokens", () => {
+  it("renews its own refused session from the grant", async () => {
+    const refresh = vi.fn(async (): Promise<RefreshOutcome> => ({
+      status: "refreshed",
+      session: { token: "new", refreshToken: "grant-2", expiresAt: START + HOUR },
+    }));
+    const { credentials, vault } = setup({
+      refresh,
+      stored: { token: "old", refreshToken: "grant", expiresAt: START + HOUR },
+    });
+    expect(await credentials.bearerToken()).toBe("old");
+    credentials.tokenRejected("old", "sign-in");
+    expect(await credentials.bearerToken()).toBe("new");
+    expect(refresh).toHaveBeenCalledWith("grant");
+    expect(vault.sessions.get(SERVER)?.token).toBe("new");
+  });
+
+  it("drops a refused session that can't renew, re-reads the CLI, and reports each refusal", async () => {
+    const readCliSession = vi.fn(async () => ({ token: "cli" }));
+    const onTokenRejected = vi.fn();
+    const { credentials, vault } = setup({
+      stored: { token: "own" },
+      readCliSession,
+      onTokenRejected,
+    });
+    expect(await credentials.bearerToken()).toBe("own");
+    credentials.tokenRejected("own", "forbidden");
+    expect(await credentials.bearerToken()).toBe("cli");
+    await flush();
+    expect(vault.sessions.has(SERVER)).toBe(false);
+    credentials.tokenRejected("cli", "sign-in");
+    await credentials.bearerToken();
+    // Re-read at once, inside the token file's 10 s reuse window.
+    expect(readCliSession).toHaveBeenCalledTimes(2);
+    expect(onTokenRejected.mock.calls).toEqual([
+      ["own", "forbidden"],
+      ["cli", "sign-in"],
+    ]);
+  });
+});
+
 describe("jwtExpiry", () => {
   it("reads exp without verifying", () => {
     const payload = Buffer.from(JSON.stringify({ exp: 1_800_000_000 })).toString("base64url");

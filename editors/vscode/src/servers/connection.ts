@@ -9,11 +9,14 @@ import { readSettings } from "../config/vscodeSettings";
 import { DEFAULT_HEALTH_TIMEOUT_MS, discoverLocalServer } from "../discovery";
 import { ServerCredentials } from "../auth/credentials";
 import { MementoCliReuseGate, SecretSessionVault } from "../auth/credentialStore";
-import { readCliSession } from "../auth/cliTokens";
+import { readCliSession, readCliWorkspace } from "../auth/cliTokens";
+import { DatabricksCliTokens } from "../auth/databricksCli";
+import { refreshDatabricksGrant, signInWithDatabricks } from "../auth/databricksSignIn";
 import { refreshSession, revokeGrant, signInWithBrowser } from "../auth/omnigentSignIn";
-import { ServerProxy } from "../proxy/ServerProxy";
+import { ServerProxy, type ProxyAuthMode } from "../proxy/ServerProxy";
+import type { SignInPrompt } from "../proxy/pages";
 import type { EditorPanelController, PanelAction } from "../panel/EditorPanelController";
-import { probeServer, type RemoteServerKind } from "./classify";
+import { findDatabricksWorkspace, probeServer, type RemoteServerKind } from "./classify";
 import { addRecentServer, RECENT_SERVERS_KEY } from "./recents";
 
 export const CONNECT_COMMAND = "omnigent.connect";
@@ -22,6 +25,22 @@ interface ActiveRemote {
   serverUrl: string;
   proxy: ServerProxy;
   credentials: ServerCredentials;
+}
+
+interface RemoteActions {
+  openInBrowser: PanelAction;
+  connectElsewhere: PanelAction;
+  retry: PanelAction;
+}
+
+/** How the proxy signs a remote server's requests. */
+interface RemoteSetup {
+  credentials: ServerCredentials;
+  authMode: ProxyAuthMode;
+  sessionCookies: readonly string[];
+  signInPrompt?: SignInPrompt;
+  /** For the output log. */
+  description: string;
 }
 
 export class ServerConnection implements vscode.Disposable {
@@ -110,56 +129,100 @@ export class ServerConnection implements vscode.Disposable {
     attempt: number,
   ): Promise<void> {
     const host = new URL(serverUrl).host;
-    const openInBrowser: PanelAction = {
-      label: "Open in Browser",
-      run: () => void vscode.env.openExternal(vscode.Uri.parse(serverUrl)),
+    const actions: RemoteActions = {
+      openInBrowser: {
+        label: "Open in Browser",
+        run: () => void vscode.env.openExternal(vscode.Uri.parse(serverUrl)),
+      },
+      connectElsewhere: {
+        label: "Connect to Another Server…",
+        run: () => void vscode.commands.executeCommand(CONNECT_COMMAND),
+      },
+      retry: { label: "Retry", run: () => void this.refresh() },
     };
-    const connectElsewhere: PanelAction = {
-      label: "Connect to Another Server…",
-      run: () => void vscode.commands.executeCommand(CONNECT_COMMAND),
-    };
-    const retry: PanelAction = { label: "Retry", run: () => void this.refresh() };
 
     if (vscode.env.remoteName) {
       this.controller.setMessage({
         title: "Remote servers aren't available in this window yet",
         detail: `This window runs on a remote machine (${vscode.env.remoteName}). Open ${host} from a local VS Code window, or in your browser.`,
-        actions: [openInBrowser, connectElsewhere],
+        actions: [actions.openInBrowser, actions.connectElsewhere],
       });
       return;
     }
-    if (kind !== "self-hosted") {
-      const what = kind === "databricks-app" ? "Databricks Apps" : "Databricks-hosted Omnigent";
+    if (kind === "databricks-workspace") {
       this.controller.setMessage({
-        title: `${what} isn't supported in VS Code yet`,
+        title: "Databricks-hosted Omnigent isn't supported in VS Code yet",
         detail: `Open ${host} in your browser for now.`,
-        actions: [openInBrowser, connectElsewhere],
+        actions: [actions.openInBrowser, actions.connectElsewhere],
       });
       return;
     }
 
     this.controller.setResolving(`Connecting to ${host}…`);
+    const setup =
+      kind === "databricks-app"
+        ? await this.databricksAppSetup(serverUrl, attempt, actions)
+        : await this.selfHostedSetup(serverUrl, attempt, actions);
+    if (!setup) {
+      return;
+    }
+    const { credentials } = setup;
+    const proxy = await ServerProxy.start({
+      serverUrl,
+      authMode: setup.authMode,
+      sessionCookies: setup.sessionCookies,
+      credentials,
+      openExternal,
+      serverLabel: `${host}${new URL(serverUrl).pathname.replace(/\/+$/, "")}`,
+      signInPrompt: setup.signInPrompt,
+      log: (message) => this.output.appendLine(message),
+    });
+    if (attempt !== this.attempt) {
+      credentials.dispose();
+      await proxy.close();
+      return;
+    }
+    this.active = { serverUrl, proxy, credentials };
+    this.controller.setResolved({
+      baseUrl: proxy.entryUrl,
+      origin: proxy.origin,
+      hostType: "remote",
+      source: "manual",
+      displayUrl: serverUrl,
+    });
+    this.log(`connected to ${serverUrl} (${setup.description}) via ${proxy.origin}`);
+    const recents = addRecentServer(this.context.globalState.get(RECENT_SERVERS_KEY), serverUrl);
+    void this.context.globalState.update(RECENT_SERVERS_KEY, recents);
+  }
+
+  /** Probe a self-hosted server; undefined once the panel shows why it can't connect. */
+  private async selfHostedSetup(
+    serverUrl: string,
+    attempt: number,
+    actions: RemoteActions,
+  ): Promise<RemoteSetup | undefined> {
+    const host = new URL(serverUrl).host;
     const probe = await probeServer(serverUrl);
     if (attempt !== this.attempt) {
-      return;
+      return undefined;
     }
     if (probe.status === "unreachable") {
       this.log(`couldn't reach ${serverUrl}: ${probe.detail}`);
       this.controller.setMessage({
         title: `Couldn't reach ${host}`,
         detail: "Check the URL and your network connection, then retry.",
-        actions: [retry, connectElsewhere],
+        actions: [actions.retry, actions.connectElsewhere],
       });
-      return;
+      return undefined;
     }
     if (probe.status === "not-omnigent") {
       this.controller.setMessage({
         title: `${host} doesn't look like an Omnigent server`,
         detail:
           "Check the server URL. If the server is behind a login page, open it in your browser.",
-        actions: [connectElsewhere, openInBrowser],
+        actions: [actions.connectElsewhere, actions.openInBrowser],
       });
-      return;
+      return undefined;
     }
     const profile = probe.profile;
     if (profile.authMode === "header" || profile.authMode === "custom") {
@@ -167,11 +230,10 @@ export class ServerConnection implements vscode.Disposable {
         title: `VS Code can't sign in to ${host} yet`,
         detail:
           "This server signs users in through a login service in front of it, which the panel can't use. Open it in your browser instead.",
-        actions: [openInBrowser, connectElsewhere],
+        actions: [actions.openInBrowser, actions.connectElsewhere],
       });
-      return;
+      return undefined;
     }
-
     const credentials = new ServerCredentials({
       serverUrl,
       vault: new SecretSessionVault(this.context.secrets),
@@ -191,31 +253,75 @@ export class ServerConnection implements vscode.Disposable {
           : undefined,
       log: (message) => this.output.appendLine(message),
     });
-    const proxy = await ServerProxy.start({
-      serverUrl,
+    return {
+      credentials,
       authMode: profile.authMode,
       sessionCookies: profile.sessionCookies,
-      credentials,
-      openExternal,
-      serverLabel: `${host}${new URL(serverUrl).pathname.replace(/\/+$/, "")}`,
-      log: (message) => this.output.appendLine(message),
-    });
+      description: `auth=${profile.authMode}`,
+    };
+  }
+
+  /**
+   * Find a Databricks App's workspace and sign in with a workspace token: the
+   * Databricks CLI's first, else a browser sign-in. Undefined once the panel
+   * shows why it can't connect.
+   */
+  private async databricksAppSetup(
+    serverUrl: string,
+    attempt: number,
+    actions: RemoteActions,
+  ): Promise<RemoteSetup | undefined> {
+    const host = new URL(serverUrl).host;
+    const lookup = await findDatabricksWorkspace(serverUrl);
+    const workspaceOrigin =
+      lookup.status === "found" ? lookup.workspaceOrigin : await readCliWorkspace(serverUrl);
     if (attempt !== this.attempt) {
-      credentials.dispose();
-      await proxy.close();
-      return;
+      return undefined;
     }
-    this.active = { serverUrl, proxy, credentials };
-    this.controller.setResolved({
-      baseUrl: proxy.entryUrl,
-      origin: proxy.origin,
-      hostType: "remote",
-      source: "manual",
-      displayUrl: serverUrl,
+    if (!workspaceOrigin) {
+      if (lookup.status === "unreachable") {
+        this.log(`couldn't reach ${serverUrl}: ${lookup.detail}`);
+        this.controller.setMessage({
+          title: `Couldn't reach ${host}`,
+          detail: "Check the URL and your network connection, then retry.",
+          actions: [actions.retry, actions.connectElsewhere],
+        });
+      } else {
+        this.controller.setMessage({
+          title: `Couldn't find the Databricks workspace for ${host}`,
+          detail:
+            "The app didn't send VS Code to a Databricks sign-in. Check the app URL, then retry.",
+          actions: [actions.retry, actions.openInBrowser, actions.connectElsewhere],
+        });
+      }
+      return undefined;
+    }
+    const log = (message: string) => this.output.appendLine(message);
+    const cliTokens = new DatabricksCliTokens(workspaceOrigin, { log });
+    const credentials = new ServerCredentials({
+      serverUrl,
+      vault: new SecretSessionVault(this.context.secrets),
+      cliGate: new MementoCliReuseGate(this.context.globalState),
+      readCliSession: () => cliTokens.token(),
+      refresh: (grant) => refreshDatabricksGrant(workspaceOrigin, grant),
+      // Signing out forgets the grant here; the workspace keeps no session for it.
+      revoke: async () => undefined,
+      signIn: async (signal) =>
+        (await cliTokens.token()) ??
+        signInWithDatabricks(workspaceOrigin, { openExternal, signal }),
+      onTokenRejected: (token, rejection) => cliTokens.invalidate(token, rejection),
+      log,
     });
-    this.log(`connected to ${serverUrl} (auth=${profile.authMode}) via ${proxy.origin}`);
-    const recents = addRecentServer(this.context.globalState.get(RECENT_SERVERS_KEY), serverUrl);
-    void this.context.globalState.update(RECENT_SERVERS_KEY, recents);
+    return {
+      credentials,
+      authMode: "databricks-app",
+      sessionCookies: [],
+      signInPrompt: {
+        detail: `This app signs you in with your Databricks account on ${new URL(workspaceOrigin).host}.`,
+        button: "Sign in with Databricks",
+      },
+      description: `databricks-app, workspace ${workspaceOrigin}`,
+    };
   }
 
   private needsPromptMessage(

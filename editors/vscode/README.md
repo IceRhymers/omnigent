@@ -49,9 +49,28 @@ Sessions are kept in VS Code's secret storage and renewed before they expire.
 from reusing the CLI's session until you sign in again in VS Code; the CLI stays
 signed in.
 
+### Databricks Apps
+
+Omnigent deployed as a Databricks App (`https://<app>.databricksapps.com`) signs you in
+with your account on the workspace that hosts the app. The extension finds that
+workspace from the app's sign-in redirect (or from an earlier `omnigent login` to the
+app), then:
+
+- reuses the [Databricks CLI](https://docs.databricks.com/dev-tools/cli/)'s sign-in
+  when you have one: a `databricks-cli` profile for the workspace in
+  `~/.databrickscfg` (`DATABRICKS_CONFIG_PROFILE` is tried first), else
+  `databricks auth login --host <workspace>`. The extension only runs
+  `databricks auth token`; it never changes the CLI's sign-in;
+- otherwise shows **Sign in with Databricks**, which signs in through your browser.
+  If the workspace doesn't allow that, the panel asks you to run
+  `databricks auth login --host <workspace>` instead.
+
+If the app turns you away (for example, you don't have permission to use it), the
+panel shows the app's answer.
+
 ### Not supported yet
 
-- Databricks-hosted Omnigent and Databricks Apps.
+- Databricks-hosted Omnigent (`https://<workspace>/…/omnigent`).
 - Servers behind a separate login service (`header` auth mode, e.g. an SSO proxy in
   front of Omnigent).
 - Remote VS Code windows (SSH, containers, WSL, Codespaces).
@@ -78,6 +97,10 @@ browser instead.
 - Magic links and invite links sign in your browser, not the panel.
 - Username-and-password servers ask you to sign in again when their session expires
   (about every 8 hours by default), unless the panel is reusing a CLI session.
+- For a Databricks App, **Sign in with Databricks** uses the Databricks CLI's account
+  whenever the CLI is signed in to the workspace. To use a different account, sign the
+  CLI in with it (`databricks auth login --host <workspace>`) first. Signing out of
+  the panel doesn't sign the CLI out.
 - Dictation inside the panel hasn't been verified with remote servers.
 
 ## Build / test / package
@@ -103,7 +126,7 @@ src/
 ├── config/             # settings + server-target resolution
 ├── discovery/          # local-server discovery (pidfile / health / liveness)
 ├── servers/            # remote-server recognition, the active connection, recents
-├── auth/               # browser sign-in, CLI session reuse, stored credentials
+├── auth/               # browser sign-in (Omnigent, Databricks), CLI session reuse, stored credentials
 ├── proxy/              # the loopback credential proxy and its own pages
 └── net/                # back-channel JSON requests
 ```

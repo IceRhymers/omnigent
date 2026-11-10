@@ -225,7 +225,8 @@ export function sessionFrom(
   return session;
 }
 
-function describeLoopbackError(error: unknown, signal: AbortSignal | undefined): unknown {
+/** A loopback sign-in failure as a message for the panel; an abort passes through. */
+export function describeLoopbackError(error: unknown, signal: AbortSignal | undefined): unknown {
   if (signal?.aborted) {
     return error;
   }
