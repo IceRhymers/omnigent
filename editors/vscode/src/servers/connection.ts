@@ -28,6 +28,7 @@ import {
 import { addRecentServer, RECENT_SERVERS_KEY } from "./recents";
 
 export const CONNECT_COMMAND = "omnigent.connect";
+export const START_LOCAL_COMMAND = "omnigent.startLocal";
 
 interface ActiveRemote {
   serverUrl: string;
@@ -113,6 +114,11 @@ export class ServerConnection implements vscode.Disposable {
         this.log(`no server to show (${resolution.reason})`);
         this.controller.setMessage(this.needsPromptMessage(resolution.reason));
     }
+  }
+
+  /** The connected remote server as users open it, or undefined when none is. */
+  get remoteServerUrl(): string | undefined {
+    return this.active?.serverUrl;
   }
 
   /** Sign out of the connected remote server and reload the panel. */
@@ -432,8 +438,15 @@ export class ServerConnection implements vscode.Disposable {
       case "no-manual-no-local":
         return {
           title: "No Omnigent server found",
-          detail: "Start one with `omnigent server`, or connect to a remote server.",
-          actions: [connect, retry],
+          detail: "Start Omnigent on this computer, or connect to a remote server.",
+          actions: [
+            {
+              label: "Start on This Computer",
+              run: () => void vscode.commands.executeCommand(START_LOCAL_COMMAND),
+            },
+            connect,
+            retry,
+          ],
         };
     }
   }

@@ -28,6 +28,31 @@ for now.
   It answers only under a random per-launch path, and only for its own `Host` and
   `Origin`.
 
+## Run Omnigent from VS Code
+
+These commands run the [Omnigent CLI](../../README.md) (`omnigent`, found on `PATH` or in
+`~/.local/bin`) in a VS Code terminal, so you can follow along and answer sign-in or
+setup prompts there. If the CLI isn't installed, the extension offers its install
+command.
+
+- **Omnigent: Start on This Computer** (`omnigent.startLocal`) runs
+  `omnigent start --server= --no-open`: a local server in the background with this
+  computer as its host, then opens it in the panel. The **No Omnigent server found**
+  page and the activity-bar view offer it too. Stop it with `omnigent stop`.
+- **Omnigent: Use This Computer as a Host** (`omnigent.hostHere`) runs
+  `omnigent start --server <server> --no-open` for the remote server the panel shows,
+  so its sessions can run here. A self-hosted server you haven't signed in to with the
+  CLI runs `omnigent login <server>` first; Databricks-hosted servers sign in during
+  `start`. On this computer's own server it does the same as **Start on This
+  Computer**. It's also in the panel's **…** menu.
+- **Omnigent: Set Up Unity Gateway…** (`omnigent.setUpUnityGateway`) runs
+  `omnigent setup`. Pick a coding agent, choose **+ Add a credential**, then
+  **Databricks — workspace**, and enter your workspace URL; the coding agents on this
+  computer then reach their models through the workspace's Unity Gateway. New sessions
+  use it; there's nothing to restart.
+
+The host keeps running in the background after VS Code quits.
+
 ## Remote servers
 
 Run **Omnigent: Connect to Server…** (`omnigent.connect`) and pick **This computer**, a
@@ -143,7 +168,8 @@ workspaces still works; run `build:web-ui` before debugging one with F5.
 ```
 src/
 ├── extension.ts        # activate()/deactivate() — wires the panel, connection, commands, view
-├── commands/           # omnigent.open, omnigent.connect, omnigent.signOut
+├── commands/           # open, connect, signOut, and the start/host/setup commands
+├── cli/                # find the omnigent CLI and run it in a task terminal
 ├── panel/              # EditorPanelController, host.ts (render), iframeHtml.ts, csp.ts
 ├── config/             # settings + server-target resolution
 ├── discovery/          # local-server discovery (pidfile / health / liveness)
