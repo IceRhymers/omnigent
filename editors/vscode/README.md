@@ -68,9 +68,20 @@ app), then:
 If the app turns you away (for example, you don't have permission to use it), the
 panel shows the app's answer.
 
+### Databricks workspaces
+
+Omnigent hosted in a Databricks workspace opens from the workspace's Omnigent page,
+`https://<workspace>/omnigent` (the workspace root and its `/api/2.0/omnigent` API URL
+work too). It signs you in like a Databricks App does, with the Databricks CLI's
+sign-in for the workspace or **Sign in with Databricks**.
+
+The workspace's `/omnigent` page is part of the Databricks web app, which can't be
+framed, so the panel runs its own copy of the Omnigent app (built into the extension
+as `dist/web-ui`) and sends only the Omnigent API (`/api/2.0/omnigent/…`) to the
+workspace. **Open in Browser** still opens the workspace's own page.
+
 ### Not supported yet
 
-- Databricks-hosted Omnigent (`https://<workspace>/…/omnigent`).
 - Servers behind a separate login service (`header` auth mode, e.g. an SSO proxy in
   front of Omnigent).
 - Remote VS Code windows (SSH, containers, WSL, Codespaces).
@@ -101,6 +112,14 @@ browser instead.
   whenever the CLI is signed in to the workspace. To use a different account, sign the
   CLI in with it (`databricks auth login --host <workspace>`) first. Signing out of
   the panel doesn't sign the CLI out.
+- In a Databricks workspace the panel's app is the one this extension was built with,
+  not the workspace's, so it can be older or newer than the workspace's Omnigent
+  server. Features the Databricks web app adds around Omnigent (such as suggesting
+  people when you share) aren't in the panel.
+- Databricks workspaces are recognized by their `databricks.com` or
+  `azuredatabricks.net` host; one on a custom domain is treated as a self-hosted server.
+- A workspace URL's `?o=<workspace-id>` is ignored, so workspaces that share a host and
+  are told apart only by it aren't supported.
 - Dictation inside the panel hasn't been verified with remote servers.
 
 ## Build / test / package
@@ -110,11 +129,14 @@ pnpm install --frozen-lockfile
 pnpm run type-check   # tsc --noEmit
 pnpm run test         # vitest run
 pnpm run build        # esbuild -> dist/extension.js
-pnpm run package      # @vscode/vsce package -> omnigent-vscode-<version>.vsix
+pnpm run build:web-ui # web app (needs web/'s dependencies) -> dist/web-ui
+pnpm run package      # build:web-ui, then @vscode/vsce package -> omnigent-vscode-<version>.vsix
 ```
 
 Install the resulting `.vsix` via the Extensions view → "Install from VSIX…". The
-`.vsix` runtime is `dist/extension.js` + `media/`.
+`.vsix` runtime is `dist/extension.js`, `dist/web-ui/` (the app served for Databricks
+workspaces) and `media/`. Without `dist/web-ui`, everything except Databricks
+workspaces still works; run `build:web-ui` before debugging one with F5.
 
 ## Layout
 

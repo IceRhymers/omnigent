@@ -88,9 +88,10 @@
   },
   "scripts": {
     "build": "node esbuild.js",
+    "build:web-ui": "node scripts/build-web-ui.js",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
-    "package": "vsce package"
+    "package": "node scripts/build-web-ui.js && vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

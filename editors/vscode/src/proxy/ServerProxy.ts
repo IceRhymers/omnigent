@@ -5,7 +5,9 @@
  * won't send the server's SameSite=Lax session cookie, and the server has no
  * CORS for a token-carrying SPA. Instead the iframe loads this proxy, which
  * forwards every request (HTTP, SSE, WebSocket) to the server with the user's
- * credential as `Authorization: Bearer`. Cookies never reach the browser.
+ * credential as `Authorization: Bearer`. Cookies never reach the browser. A
+ * server with no app of its own to frame (a Databricks workspace) gets the
+ * extension's bundled app instead (localApp.ts), and only its API is forwarded.
  *
  * Only `http://127.0.0.1:<port>/<secret>/…` is served, where the secret is
  * random per launch, and requests must carry that exact Host and (when sent)
@@ -20,6 +22,7 @@ import type { Duplex } from "node:stream";
 import type { ProxyCredentials, TokenRejection } from "../auth/credentials";
 import type { ServerAuthMode } from "../servers/classify";
 import { rewriteIndexHtml } from "./indexRewrite";
+import { forwardsToServer, sendLocalFile, type LocalApp } from "./localApp";
 import {
   continueInBrowserPage,
   errorPage,
@@ -68,11 +71,12 @@ const RESPONSE_HEADERS_DROPPED = new Set([
 ]);
 
 /**
- * A self-hosted server's sign-in mode, or `databricks-app`: an app behind the
- * Databricks Apps edge, which takes a workspace token and refuses to forward
- * requests without one.
+ * A self-hosted server's sign-in mode, or one that takes a Databricks
+ * workspace token: `databricks-app`, an app behind the Databricks Apps edge,
+ * which refuses to forward requests without one, or `databricks-workspace`,
+ * Omnigent served by a workspace's own API.
  */
-export type ProxyAuthMode = ServerAuthMode | "databricks-app";
+export type ProxyAuthMode = ServerAuthMode | "databricks-app" | "databricks-workspace";
 
 export interface ServerProxyOptions {
   /** Remote server URL: https origin plus optional mount path, no trailing slash. */
@@ -86,6 +90,11 @@ export interface ServerProxyOptions {
   serverLabel?: string;
   /** The sign-in page's wording; defaults to a browser sign-in. */
   signInPrompt?: SignInPrompt;
+  /**
+   * Serve this app instead of the server's, sending the server only its own
+   * paths (`/v1`, `/auth`, …), for a server that has no app to frame.
+   */
+  localApp?: LocalApp;
   log?(message: string): void;
 }
 
@@ -101,6 +110,8 @@ export class ServerProxy {
   private readonly secret = crypto.randomBytes(32).toString("base64url");
   private readonly tunnels = new Set<Duplex>();
   private readonly upstreams = new Set<http.ClientRequest>();
+  /** The local app's shell, rebased under the prefix. */
+  private localIndex: Buffer | undefined;
   private port = 0;
   private closed = false;
 
@@ -208,7 +219,7 @@ export class ServerProxy {
     }
     const appPath = this.appPathOf(url.pathname);
     const authMode = this.options.authMode;
-    if ((authMode === "oidc" || authMode === "databricks-app") && req.method === "GET") {
+    if ((authMode === "oidc" || signsInWithDatabricks(authMode)) && req.method === "GET") {
       if (appPath === "/auth/login") {
         req.resume();
         this.sendPage(
@@ -218,7 +229,11 @@ export class ServerProxy {
         );
         return;
       }
-      if (authMode === "oidc" && appPath === "/auth/logout") {
+      // A workspace keeps no Omnigent session to end; forgetting the token signs out.
+      if (
+        (authMode === "oidc" || authMode === "databricks-workspace") &&
+        appPath === "/auth/logout"
+      ) {
         req.resume();
         await this.options.credentials.signOut();
         res
@@ -230,7 +245,69 @@ export class ServerProxy {
         return;
       }
     }
+    if (this.options.localApp) {
+      await this.serveLocalApp(req, res, path, appPath, this.options.localApp);
+      return;
+    }
     await this.forward(req, res, path);
+  }
+
+  private async serveLocalApp(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    path: string,
+    appPath: string | null,
+    app: LocalApp,
+  ): Promise<void> {
+    const navigation = isNavigation(req.headers);
+    if (appPath === null) {
+      // Outside the mount is the rest of the server, which the app never needs.
+      req.resume();
+      if (navigation && req.method === "GET") {
+        res.writeHead(302, { location: this.homePath, "cache-control": "no-store" }).end();
+      } else {
+        res.writeHead(404, { "content-type": "text/plain" }).end();
+      }
+      return;
+    }
+    const route = app.route(appPath, req.method, navigation);
+    if (route === "server") {
+      await this.forward(req, res, path);
+      return;
+    }
+    req.resume();
+    const file = route === "file" ? app.file(appPath) : undefined;
+    if (file) {
+      sendLocalFile(req, res, appPath, file, (error) =>
+        this.log(`couldn't read ${appPath}: ${describe(error)}`),
+      );
+      return;
+    }
+    if (route !== "index") {
+      res.writeHead(404, { "content-type": "text/plain" }).end();
+      return;
+    }
+    if (signsInWithDatabricks(this.options.authMode)) {
+      const token = await this.options.credentials.bearerToken().catch(() => undefined);
+      if (res.destroyed || this.closed) {
+        return;
+      }
+      if (!token) {
+        this.sendSignInRequired(res, path, true);
+        return;
+      }
+    }
+    this.localIndex ??= Buffer.from(
+      rewriteIndexHtml(app.indexHtml, this.prefix, this.serverBasePath),
+      "utf8",
+    );
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": this.localIndex.length,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    });
+    res.end(req.method === "HEAD" ? undefined : this.localIndex);
   }
 
   private async handleControl(
@@ -279,9 +356,9 @@ export class ServerProxy {
     if (res.destroyed || this.closed) {
       return;
     }
-    const databricksApp = this.options.authMode === "databricks-app";
-    if (databricksApp && !token) {
-      // The Apps edge would only redirect to a sign-in the panel can't show.
+    const databricks = signsInWithDatabricks(this.options.authMode);
+    if (databricks && !token) {
+      // Databricks would only refuse it, or redirect to a sign-in the panel can't show.
       req.resume();
       this.sendSignInRequired(res, path, navigation);
       return;
@@ -332,7 +409,7 @@ export class ServerProxy {
     });
     upstream.on("response", (upstreamRes) => {
       const rejection =
-        databricksApp && token
+        databricks && token
           ? databricksTokenRejection(upstreamRes.statusCode ?? 502, upstreamRes.headers, navigation)
           : undefined;
       if (token && rejection) {
@@ -496,6 +573,13 @@ export class ServerProxy {
       socket.end(`HTTP/1.1 ${admitted.refuse} ${reason}\r\nConnection: close\r\n\r\n`);
       return;
     }
+    if (this.options.localApp) {
+      const appPath = this.appPathOf(new URL(admitted.path, "http://proxy.invalid").pathname);
+      if (appPath === null || !forwardsToServer(appPath)) {
+        socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+        return;
+      }
+    }
     this.tunnels.add(socket);
     socket.on("close", () => this.tunnels.delete(socket));
     const token = await this.options.credentials.bearerToken().catch(() => undefined);
@@ -503,8 +587,8 @@ export class ServerProxy {
       socket.destroy();
       return;
     }
-    const databricksApp = this.options.authMode === "databricks-app";
-    if (databricksApp && !token) {
+    const databricks = signsInWithDatabricks(this.options.authMode);
+    if (databricks && !token) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
     }
@@ -550,7 +634,7 @@ export class ServerProxy {
       // Refused upgrade: relay the answer and close, since the body framing was dropped.
       this.captureSessionCookies(upstreamRes.headers["set-cookie"]);
       const rejection =
-        databricksApp && token
+        databricks && token
           ? databricksTokenRejection(upstreamRes.statusCode ?? 502, upstreamRes.headers, false)
           : undefined;
       if (token && rejection) {
@@ -816,13 +900,18 @@ export function isNavigation(headers: http.IncomingHttpHeaders): boolean {
   return String(headers.accept ?? "").includes("text/html");
 }
 
+/** Whether requests carry a Databricks workspace token, and fail without one. */
+function signsInWithDatabricks(authMode: ProxyAuthMode): boolean {
+  return authMode === "databricks-app" || authMode === "databricks-workspace";
+}
+
 /**
- * Whether the Databricks Apps edge refused a request's token. Pure.
+ * Whether Databricks refused a request's token. Pure.
  *
- * A 401, or a redirect into the workspace's OAuth flow (`/oidc/…`, the edge's
- * `/.auth/…`), means the token no longer signs in. The edge's 403 answers both
- * a dead token and a user without access to the app; the app's own 403s are
- * JSON, and never answer a page load.
+ * A 401 (the workspace API's answer), or a redirect into the workspace's OAuth
+ * flow (`/oidc/…`, the Apps edge's `/.auth/…`), means the token no longer signs
+ * in. The edge's 403 answers both a dead token and a user without access to the
+ * app; the app's own 403s are JSON, and never answer a page load.
  */
 export function databricksTokenRejection(
   status: number,

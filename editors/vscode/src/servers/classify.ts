@@ -8,6 +8,7 @@
  * `login_url` of an unauthenticated `GET /v1/me`.
  */
 import {
+  WORKSPACE_UI_PATH,
   isDatabricksManagedServerUrl,
   isDatabricksOAuthServerUrl,
   parseManifestAuth,
@@ -26,6 +27,11 @@ export const MANIFEST_TIMEOUT_MS = 5_000;
 
 const DATABRICKS_APPS_DOMAIN = "databricksapps.com";
 
+/** Where a workspace serves the Omnigent API (omnigent/util/server_url.py). */
+const WORKSPACE_API_PATH = "/api/2.0/omnigent";
+/** The API mounts a workspace URL may name; Databricks keeps the plural for older clients. */
+const WORKSPACE_API_PATHS = [WORKSPACE_API_PATH, "/api/2.0/omnigents"];
+
 /** Classify a remote server URL by host. Pure. */
 export function remoteServerKind(serverUrl: string): RemoteServerKind {
   if (!isDatabricksManagedServerUrl(serverUrl)) {
@@ -35,6 +41,68 @@ export function remoteServerKind(serverUrl: string): RemoteServerKind {
   return host === DATABRICKS_APPS_DOMAIN || host.endsWith(`.${DATABRICKS_APPS_DOMAIN}`)
     ? "databricks-app"
     : "databricks-workspace";
+}
+
+export interface WorkspaceOmnigent {
+  /** `https://<workspace>`, which also signs the user in. */
+  workspaceOrigin: string;
+  /** The Omnigent API, `<workspace>/api/2.0/omnigent`. */
+  apiUrl: string;
+  /** The workspace's Omnigent page, `<workspace>/omnigent`, for display and the browser. */
+  pageUrl: string;
+}
+
+/**
+ * The Omnigent URLs of a Databricks workspace, from its root, its `/omnigent`
+ * page (or a deep link into it), or its API mount; null for any other path. Pure.
+ */
+export function workspaceOmnigent(serverUrl: string): WorkspaceOmnigent | null {
+  const url = new URL(serverUrl);
+  const path = url.pathname.replace(/\/+$/, "");
+  const known =
+    path === "" ||
+    path === WORKSPACE_UI_PATH ||
+    path.startsWith(`${WORKSPACE_UI_PATH}/`) ||
+    WORKSPACE_API_PATHS.includes(path);
+  if (!known) {
+    return null;
+  }
+  return {
+    workspaceOrigin: url.origin,
+    apiUrl: url.origin + WORKSPACE_API_PATH,
+    pageUrl: url.origin + WORKSPACE_UI_PATH,
+  };
+}
+
+export type WorkspaceProbe =
+  | { status: "ok"; httpStatus: number; databricksRealm: boolean }
+  | { status: "unreachable"; detail: string };
+
+/**
+ * Check that a workspace's Omnigent API answers. Without a token it should
+ * refuse with a 401 naming `DatabricksRealm`, which is how the Omnigent CLI
+ * recognizes a workspace. Never throws.
+ */
+export async function probeWorkspace(
+  apiUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<WorkspaceProbe> {
+  try {
+    const probe = await requestJson(
+      serverEndpoint(apiUrl, "/v1/me"),
+      { timeoutMs: MANIFEST_TIMEOUT_MS },
+      fetchImpl,
+    );
+    const challenge = probe.headers.get("www-authenticate") ?? "";
+    return {
+      status: "ok",
+      httpStatus: probe.status,
+      databricksRealm: probe.status === 401 && challenge.toLowerCase().includes("databricksrealm"),
+    };
+  } catch (error) {
+    const detail = error instanceof NetworkError ? error.message : String(error);
+    return { status: "unreachable", detail };
+  }
 }
 
 export interface ServerProfile {

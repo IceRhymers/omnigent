@@ -1,4 +1,5 @@
 // Module exports used by the VS Code extension (editors/vscode).
+export const WORKSPACE_UI_PATH: string;
 export function isLoopbackServerUrl(raw: string): boolean;
 export function isDatabricksManagedServerUrl(rawUrl: string | null | undefined): boolean;
 export function isDatabricksOAuthServerUrl(rawUrl: string): boolean;
