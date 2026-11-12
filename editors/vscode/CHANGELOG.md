@@ -2,6 +2,14 @@
 
 All notable changes to the Omnigent VS Code extension are documented here.
 
+## [Unreleased]
+
+- Add an activity-bar Sessions view with **This Folder** (including git worktrees) and
+  **All Sessions** scopes, session status, harness labels, and automatic refresh.
+- Open a session from the tree in the editor-beside panel.
+- Create a session in the current workspace folder with a chosen coding agent, with
+  last-used ordering and per-host availability.
+
 ## [0.1.0]
 
 Initial release — a minimal, iframe-only client for a locally running Omnigent
