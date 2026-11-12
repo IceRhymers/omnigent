@@ -72,9 +72,10 @@ build-web-ui: _ensure _ensure-web
 package: build _ensure-web
     pnpm run package
 
+# Delete build outputs and node_modules; the next recipe reinstalls dependencies with pnpm.
 [group('build')]
 clean:
-    rm -rf dist *.vsix
+    rm -rf dist *.vsix node_modules
 
 # Open an Extension Development Host on a folder (default: the current directory).
 [group('run')]
