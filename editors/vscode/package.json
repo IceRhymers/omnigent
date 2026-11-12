@@ -1,7 +1,7 @@
 {
   "name": "omnigent-vscode",
   "displayName": "Omnigent",
-  "description": "Open your running local Omnigent server inside VS Code, in an editor-beside iframe.",
+  "description": "Open Omnigent inside VS Code, in an editor-beside panel: your local server, or a remote one you sign in to.",
   "version": "0.1.0",
   "publisher": "databricks",
   "license": "Apache-2.0",
@@ -23,7 +23,7 @@
         "omnigent.serverUrl": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Manual Omnigent server URL override for a **localhost** server (e.g. `http://127.0.0.1:6767`). Leave empty to auto-discover a locally running Omnigent server. Non-localhost URLs are not supported in this build."
+          "markdownDescription": "Omnigent server to open. Leave empty to auto-discover a locally running server, or set a localhost URL (e.g. `http://127.0.0.1:6767`) or a remote `https://` URL (e.g. `https://omnigent.example.com`). Remote servers load through a local proxy that signs you in. Use **Omnigent: Connect to Server…** to pick one."
         }
       }
     },
@@ -48,7 +48,21 @@
     "viewsWelcome": [
       {
         "view": "omnigent.home",
-        "contents": "Open the running Omnigent server UI in an editor tab.\n[Open Omnigent](command:omnigent.open)\nStart a local server with `omnigent server`, or set `omnigent.serverUrl` to a localhost URL."
+        "contents": "Open Omnigent in an editor tab.\n[Open Omnigent](command:omnigent.open)\nNo server yet? [Start Omnigent on this computer](command:omnigent.startLocal), or [connect to a remote server](command:omnigent.connect).\nRoute your coding agents through Databricks: [set up Unity Gateway](command:omnigent.setUpUnityGateway)."
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "omnigent",
+        "required": [
+          "runId"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "description": "Identifies one `omnigent` command the extension ran."
+          }
+        }
       }
     ],
     "commands": [
@@ -56,6 +70,26 @@
         "command": "omnigent.open",
         "title": "Omnigent: Open",
         "icon": "media/omnigent-icon.svg"
+      },
+      {
+        "command": "omnigent.connect",
+        "title": "Omnigent: Connect to Server…"
+      },
+      {
+        "command": "omnigent.signOut",
+        "title": "Omnigent: Sign Out of Server"
+      },
+      {
+        "command": "omnigent.startLocal",
+        "title": "Omnigent: Start on This Computer"
+      },
+      {
+        "command": "omnigent.hostHere",
+        "title": "Omnigent: Use This Computer as a Host"
+      },
+      {
+        "command": "omnigent.setUpUnityGateway",
+        "title": "Omnigent: Set Up Unity Gateway…"
       }
     ],
     "menus": {
@@ -63,20 +97,46 @@
         {
           "command": "omnigent.open",
           "group": "navigation@99"
+        },
+        {
+          "command": "omnigent.hostHere",
+          "when": "activeWebviewPanelId == 'omnigent'",
+          "group": "1_omnigent@1"
+        },
+        {
+          "command": "omnigent.setUpUnityGateway",
+          "when": "activeWebviewPanelId == 'omnigent'",
+          "group": "1_omnigent@2"
         }
       ],
       "commandPalette": [
         {
           "command": "omnigent.open"
+        },
+        {
+          "command": "omnigent.connect"
+        },
+        {
+          "command": "omnigent.signOut"
+        },
+        {
+          "command": "omnigent.startLocal"
+        },
+        {
+          "command": "omnigent.hostHere"
+        },
+        {
+          "command": "omnigent.setUpUnityGateway"
         }
       ]
     }
   },
   "scripts": {
     "build": "node esbuild.js",
+    "build:web-ui": "node scripts/build-web-ui.js",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
-    "package": "vsce package"
+    "package": "node scripts/build-web-ui.js && vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

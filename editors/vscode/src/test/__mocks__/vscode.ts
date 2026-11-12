@@ -15,7 +15,12 @@ export const window = {
   registerTreeDataProvider: (_id: string, _provider: unknown) => ({ dispose: () => {} }),
   // Default stub panel; the controller test overrides this with a fake panel.
   createWebviewPanel: (_id: string, _title: string, _col: unknown, _opts: unknown) => ({
-    webview: { html: "", postMessage: () => true, cspSource: "vscode-resource:" },
+    webview: {
+      html: "",
+      postMessage: () => true,
+      cspSource: "vscode-resource:",
+      onDidReceiveMessage: (_cb: (message: unknown) => void) => ({ dispose: () => {} }),
+    },
     reveal: () => {},
     onDidDispose: (_cb: () => void) => ({ dispose: () => {} }),
     dispose: () => {},

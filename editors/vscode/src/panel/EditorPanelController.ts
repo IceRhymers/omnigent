@@ -1,19 +1,36 @@
 /**
- * Sole owner of the editor-beside Omnigent `WebviewPanel` AND the resolved
- * server target that drives its render.
+ * Sole owner of the editor-beside Omnigent `WebviewPanel` AND the state that
+ * drives its render: resolving, a resolved server target, or a status message.
  *
- * The panel hosts the running LOCAL Omnigent server in a single static <iframe>
- * (panel/host.ts). There is no in-panel routing or messaging: the framed app
- * owns its own navigation. This is the ONLY `createWebviewPanel` call in the
- * codebase.
+ * The panel hosts the Omnigent app in a single static <iframe> (panel/host.ts)
+ * pointed at a local server or the local proxy for a remote one. The framed
+ * app owns its own navigation; the only messages are button clicks on the
+ * status page. This is the ONLY `createWebviewPanel` call in the codebase.
  */
 import * as vscode from "vscode";
-import { renderInto, renderResolvingHtml } from "./host";
+import * as crypto from "node:crypto";
+import { renderInto, renderMessageHtml, renderResolvingHtml } from "./host";
 import type { ServerTarget } from "../config";
+
+export interface PanelAction {
+  label: string;
+  run(): void;
+}
+
+export interface PanelMessage {
+  title: string;
+  detail: string;
+  actions?: PanelAction[];
+}
+
+type PanelState =
+  | { kind: "resolving"; text?: string }
+  | { kind: "resolved"; target: ServerTarget }
+  | { kind: "message"; message: PanelMessage };
 
 export class EditorPanelController {
   private panel?: vscode.WebviewPanel;
-  private resolved?: { target: ServerTarget };
+  private state: PanelState = { kind: "resolving" };
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -21,12 +38,26 @@ export class EditorPanelController {
   ) {}
 
   /**
-   * Store the resolved server target. Called from extension.ts once the local
-   * server resolves. If a panel is already open (e.g. opened during the async
-   * discovery window), re-render it so it leaves the "Resolving…" placeholder.
+   * Store the resolved server target. If a panel is already open (e.g. opened
+   * during the async discovery window), re-render it so it leaves the
+   * "Resolving…" placeholder.
    */
   setResolved(target: ServerTarget): void {
-    this.resolved = { target };
+    this.setState({ kind: "resolved", target });
+  }
+
+  /** Show the placeholder, e.g. while connecting to a remote server. */
+  setResolving(text?: string): void {
+    this.setState({ kind: "resolving", text });
+  }
+
+  /** Show a status page instead of the app. */
+  setMessage(message: PanelMessage): void {
+    this.setState({ kind: "message", message });
+  }
+
+  /** Reload the framed app (e.g. after signing out). */
+  reload(): void {
     if (this.panel) {
       this.render(this.panel.webview);
     }
@@ -50,6 +81,7 @@ export class EditorPanelController {
       },
     );
     this.panel = panel;
+    panel.webview.onDidReceiveMessage((message: unknown) => this.onMessage(message));
     panel.onDidDispose(() => {
       // Guard against a fire after the controller already dropped this panel.
       if (this.panel === panel) {
@@ -72,15 +104,42 @@ export class EditorPanelController {
     panel?.dispose();
   }
 
-  private render(webview: vscode.Webview): void {
-    if (!this.resolved) {
-      // No resolved target yet — show the placeholder until setResolved arrives.
-      webview.html = renderResolvingHtml();
+  private setState(state: PanelState): void {
+    this.state = state;
+    if (this.panel) {
+      this.render(this.panel.webview);
+    }
+  }
+
+  private onMessage(message: unknown): void {
+    if (this.state.kind !== "message") {
       return;
     }
-    renderInto(webview, {
-      target: this.resolved.target,
-      log: (m) => this.output.appendLine(m),
-    });
+    const { type, index } = (message ?? {}) as { type?: unknown; index?: unknown };
+    if (type === "action" && typeof index === "number") {
+      this.state.message.actions?.[index]?.run();
+    }
+  }
+
+  private render(webview: vscode.Webview): void {
+    switch (this.state.kind) {
+      case "resolving":
+        webview.html = renderResolvingHtml(this.state.text);
+        return;
+      case "message":
+        webview.html = renderMessageHtml({
+          title: this.state.message.title,
+          detail: this.state.message.detail,
+          actions: (this.state.message.actions ?? []).map((action) => action.label),
+          nonce: crypto.randomBytes(16).toString("base64url"),
+          cspSource: webview.cspSource,
+        });
+        return;
+      case "resolved":
+        renderInto(webview, {
+          target: this.state.target,
+          log: (m) => this.output.appendLine(m),
+        });
+    }
   }
 }
