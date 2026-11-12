@@ -19,15 +19,26 @@
 export interface BuildIframeHtmlOptions {
   /** Server base URL (e.g. "http://127.0.0.1:6767"). A trailing slash is stripped. */
   baseUrl: string;
+  /** An app route such as `/c/<session-id>`; defaults to the app's home screen. */
+  path?: string;
   /** The CSP string (from buildCsp) — its frame-src must allow the server origin. */
   csp: string;
   /** Nonce stamped on the inline <style>. */
   nonce: string;
 }
 
+/** Join an app route to the framed base URL without crossing origins. */
+export function appUrl(baseUrl: string, path = "/"): string {
+  if (!path.startsWith("/") || path.startsWith("//")) {
+    throw new Error(`refusing to navigate to a non-app path: ${path}`);
+  }
+  const base = baseUrl.replace(/\/+$/, "");
+  return path === "/" ? base : `${base}${path}`;
+}
+
 export function buildIframeHtml(opts: BuildIframeHtmlOptions): string {
   const { baseUrl, csp, nonce } = opts;
-  const src = baseUrl.replace(/\/$/, "");
+  const src = appUrl(baseUrl, opts.path);
 
   return `<!DOCTYPE html>
 <html lang="en">

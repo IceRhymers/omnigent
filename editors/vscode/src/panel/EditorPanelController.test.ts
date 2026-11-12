@@ -117,6 +117,40 @@ describe("EditorPanelController", () => {
     expect(fake.panel.webview.html).not.toContain("omnigent.example.com");
   });
 
+  it("openPath() reveals the existing panel directly at a session", () => {
+    const controller = makeController();
+    controller.setResolved(LOCAL_TARGET);
+    controller.ensure();
+
+    controller.openPath("/c/conv_123");
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(fake.panel.reveal).toHaveBeenCalled();
+    expect(fake.panel.webview.html).toContain('src="http://127.0.0.1:6767/c/conv_123"');
+  });
+
+  it("returns to the home route when the panel starts resolving another server", () => {
+    const controller = makeController();
+    controller.setResolved(LOCAL_TARGET);
+    controller.openPath("/c/conv_123");
+    controller.setResolving("Connecting elsewhere…");
+    controller.setResolved({ ...LOCAL_TARGET, baseUrl: "http://127.0.0.1:7000" });
+
+    expect(fake.panel.webview.html).toContain('src="http://127.0.0.1:7000"');
+    expect(fake.panel.webview.html).not.toContain("conv_123");
+  });
+
+  it("does not carry an old session through an error page onto another server", () => {
+    const controller = makeController();
+    controller.setResolved(LOCAL_TARGET);
+    controller.openPath("/c/old-server-session");
+    controller.setMessage({ title: "Disconnected", detail: "Try another server." });
+    controller.setResolved({ ...LOCAL_TARGET, baseUrl: "http://127.0.0.1:7000" });
+
+    expect(fake.panel.webview.html).toContain('src="http://127.0.0.1:7000"');
+    expect(fake.panel.webview.html).not.toContain("old-server-session");
+  });
+
   it("shows a status message whose buttons run their actions", () => {
     const controller = makeController();
     const retry = vi.fn();

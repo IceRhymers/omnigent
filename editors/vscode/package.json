@@ -40,14 +40,14 @@
       "omnigent-container": [
         {
           "type": "tree",
-          "id": "omnigent.home",
-          "name": "Omnigent"
+          "id": "omnigent.sessions",
+          "name": "Sessions"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "omnigent.home",
+        "view": "omnigent.sessions",
         "contents": "Open Omnigent in an editor tab.\n[Open Omnigent](command:omnigent.open)\nNo server yet? [Start Omnigent on this computer](command:omnigent.startLocal), or [connect to a remote server](command:omnigent.connect).\nRoute your coding agents through Databricks: [set up Unity Gateway](command:omnigent.setUpUnityGateway)."
       }
     ],
@@ -90,6 +90,30 @@
       {
         "command": "omnigent.setUpUnityGateway",
         "title": "Omnigent: Set Up Unity Gateway…"
+      },
+      {
+        "command": "omnigent.newSession",
+        "title": "Omnigent: New Session in This Folder",
+        "icon": "$(add)"
+      },
+      {
+        "command": "omnigent.openSession",
+        "title": "Omnigent: Open Session"
+      },
+      {
+        "command": "omnigent.refreshSessions",
+        "title": "Omnigent: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "omnigent.showFolderSessions",
+        "title": "Omnigent: Show Sessions in This Folder",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "omnigent.showAllSessions",
+        "title": "Omnigent: Show All Sessions",
+        "icon": "$(globe)"
       }
     ],
     "menus": {
@@ -107,6 +131,28 @@
           "command": "omnigent.setUpUnityGateway",
           "when": "activeWebviewPanelId == 'omnigent'",
           "group": "1_omnigent@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "omnigent.newSession",
+          "when": "view == omnigent.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "omnigent.refreshSessions",
+          "when": "view == omnigent.sessions",
+          "group": "navigation@2"
+        },
+        {
+          "command": "omnigent.showFolderSessions",
+          "when": "view == omnigent.sessions && omnigent.sessionsScope == all",
+          "group": "navigation@3"
+        },
+        {
+          "command": "omnigent.showAllSessions",
+          "when": "view == omnigent.sessions && omnigent.sessionsScope == folder",
+          "group": "navigation@3"
         }
       ],
       "commandPalette": [
@@ -127,6 +173,22 @@
         },
         {
           "command": "omnigent.setUpUnityGateway"
+        },
+        {
+          "command": "omnigent.newSession"
+        },
+        {
+          "command": "omnigent.openSession",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.refreshSessions"
+        },
+        {
+          "command": "omnigent.showFolderSessions"
+        },
+        {
+          "command": "omnigent.showAllSessions"
         }
       ]
     }
