@@ -3,6 +3,9 @@ default:
 
 export FASTLANE_SKIP_UPDATE_CHECK := "1"
 
+# VS Code extension tasks: `just vscode` lists them.
+mod vscode "editors/vscode"
+
 # iOS simulator name override (default: an available iPhone, preferring a booted one)
 DEVICE := env("OMNIGENT_IOS_SIMULATOR", "")
 

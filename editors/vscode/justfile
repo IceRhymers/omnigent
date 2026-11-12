@@ -1,0 +1,92 @@
+# Omnigent VS Code extension tasks. Run them here (`just test`) or from the
+# repository root (`just vscode test`).
+
+# Editor command used to install and launch the extension, e.g. `cursor`.
+editor_cli := env("OMNIGENT_VSCODE_CLI", "code")
+extension_id := "databricks.omnigent-vscode"
+
+default:
+    @just --list
+
+_ensure:
+    test -d node_modules || pnpm install --frozen-lockfile --filter omnigent-vscode
+
+# build-web-ui and fmt use the web app's toolchain.
+_ensure-web:
+    test -d ../../web/node_modules || pnpm install --frozen-lockfile --filter web
+
+_ensure-editor-cli:
+    #!/usr/bin/env bash
+    if ! command -v "{{ editor_cli }}" >/dev/null 2>&1; then
+        echo "'{{ editor_cli }}' is not on PATH. Install it from the Command Palette" >&2
+        echo "(Shell Command: Install 'code' command in PATH), or set OMNIGENT_VSCODE_CLI," >&2
+        echo "e.g. OMNIGENT_VSCODE_CLI=cursor just install" >&2
+        exit 1
+    fi
+
+# Install the extension's dependencies (and the web app's, for build-web-ui/package).
+[group('setup')]
+deps:
+    pnpm install --frozen-lockfile --filter omnigent-vscode --filter web
+
+# Run the unit tests; extra arguments go to vitest, e.g. `just test src/sessions`.
+[group('test')]
+test *args: _ensure
+    pnpm exec vitest run {{ args }}
+
+# Re-run the unit tests on every change.
+[group('test')]
+test-watch *args: _ensure
+    pnpm exec vitest {{ args }}
+
+[group('test')]
+type-check: _ensure
+    pnpm run type-check
+
+# What CI runs for the extension: type-check, unit tests and the bundle build.
+[group('test')]
+check: type-check test build
+
+# Format the TypeScript sources with the web app's Prettier config.
+[group('test')]
+fmt: _ensure-web
+    ../../web/node_modules/.bin/prettier --config ../../web/.prettierrc.json --write "src/**/*.ts"
+
+# Bundle src/extension.ts into dist/extension.js.
+[group('build')]
+build: _ensure
+    pnpm run build
+
+# Rebuild dist/extension.js on every change.
+[group('build')]
+watch: _ensure
+    node esbuild.js --watch
+
+# Build the web app into dist/web-ui (served for Databricks workspaces).
+[group('build')]
+build-web-ui: _ensure _ensure-web
+    pnpm run build:web-ui
+
+# Build omnigent-vscode-<version>.vsix.
+[group('build')]
+package: build _ensure-web
+    pnpm run package
+
+[group('build')]
+clean:
+    rm -rf dist *.vsix
+
+# Open an Extension Development Host on a folder (default: the current directory).
+[group('run')]
+[no-cd]
+dev folder=".": build _ensure-editor-cli
+    "{{ editor_cli }}" --extensionDevelopmentPath="{{ source_directory() }}" "{{ folder }}"
+
+# Package the extension and install the .vsix into the editor.
+[group('run')]
+install: package _ensure-editor-cli
+    "{{ editor_cli }}" --install-extension "omnigent-vscode-$(node -p "require('./package.json').version").vsix" --force
+
+[group('run')]
+uninstall: _ensure-editor-cli
+    "{{ editor_cli }}" --uninstall-extension {{ extension_id }}
