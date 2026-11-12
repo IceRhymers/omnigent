@@ -48,7 +48,21 @@
     "viewsWelcome": [
       {
         "view": "omnigent.home",
-        "contents": "Open Omnigent in an editor tab.\n[Open Omnigent](command:omnigent.open)\nStart a local server with `omnigent server`, or [connect to a remote server](command:omnigent.connect)."
+        "contents": "Open Omnigent in an editor tab.\n[Open Omnigent](command:omnigent.open)\nNo server yet? [Start Omnigent on this computer](command:omnigent.startLocal), or [connect to a remote server](command:omnigent.connect).\nRoute your coding agents through Databricks: [set up Unity Gateway](command:omnigent.setUpUnityGateway)."
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "omnigent",
+        "required": [
+          "runId"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "description": "Identifies one `omnigent` command the extension ran."
+          }
+        }
       }
     ],
     "commands": [
@@ -64,6 +78,18 @@
       {
         "command": "omnigent.signOut",
         "title": "Omnigent: Sign Out of Server"
+      },
+      {
+        "command": "omnigent.startLocal",
+        "title": "Omnigent: Start on This Computer"
+      },
+      {
+        "command": "omnigent.hostHere",
+        "title": "Omnigent: Use This Computer as a Host"
+      },
+      {
+        "command": "omnigent.setUpUnityGateway",
+        "title": "Omnigent: Set Up Unity Gateway…"
       }
     ],
     "menus": {
@@ -71,6 +97,16 @@
         {
           "command": "omnigent.open",
           "group": "navigation@99"
+        },
+        {
+          "command": "omnigent.hostHere",
+          "when": "activeWebviewPanelId == 'omnigent'",
+          "group": "1_omnigent@1"
+        },
+        {
+          "command": "omnigent.setUpUnityGateway",
+          "when": "activeWebviewPanelId == 'omnigent'",
+          "group": "1_omnigent@2"
         }
       ],
       "commandPalette": [
@@ -82,6 +118,15 @@
         },
         {
           "command": "omnigent.signOut"
+        },
+        {
+          "command": "omnigent.startLocal"
+        },
+        {
+          "command": "omnigent.hostHere"
+        },
+        {
+          "command": "omnigent.setUpUnityGateway"
         }
       ]
     }

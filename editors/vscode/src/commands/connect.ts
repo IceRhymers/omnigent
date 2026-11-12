@@ -105,7 +105,10 @@ export function serverUrlProblem(checked: ServerUrlCheck): string | undefined {
 }
 
 /** Write the setting where it takes effect, and reconnect if it didn't change. */
-async function saveServerUrl(serverUrl: string, connection: ServerConnection): Promise<void> {
+export async function saveServerUrl(
+  serverUrl: string,
+  connection: ServerConnection,
+): Promise<void> {
   const config = vscode.workspace.getConfiguration("omnigent");
   const inspected = config.inspect<string>("serverUrl");
   const target =
