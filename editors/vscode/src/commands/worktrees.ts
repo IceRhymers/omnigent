@@ -8,10 +8,17 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { repositoryWorktrees, worktreeForWorkspace } from "../sessions/worktrees";
 import type { Worktree } from "../sessions/worktrees";
-import type { SessionsTreeProvider, WorktreeNode } from "../sessions/SessionsTreeProvider";
+import type {
+  SessionNode,
+  SessionsTreeProvider,
+  WorktreeNode,
+} from "../sessions/SessionsTreeProvider";
 import { effectiveStatus } from "../sessions/SessionsTreeProvider";
+import { writeHandoff } from "../sessions/handoff";
 import {
   COPY_WORKTREE_PATH_COMMAND,
+  GO_TO_WORKTREE_COMMAND,
+  OPEN_SESSION_COMMAND,
   OPEN_WORKTREE_COMMAND,
   OPEN_WORKTREE_CURRENT_COMMAND,
   REVEAL_WORKTREE_COMMAND,
@@ -61,6 +68,44 @@ export function registerWorktreeCommands(
         void vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(node.worktree.path));
       }
     }),
+    vscode.commands.registerCommand(GO_TO_WORKTREE_COMMAND, async (node?: SessionNode) => {
+      if (node) {
+        await goToWorktree(context, sessions, node);
+      }
+    }),
+  );
+}
+
+/**
+ * Open the window for the worktree a session lives in, with that session in the
+ * Omnigent pane. The target window consumes the handoff on startup or focus.
+ */
+async function goToWorktree(
+  context: vscode.ExtensionContext,
+  sessions: SessionsTreeProvider,
+  node: SessionNode,
+): Promise<void> {
+  const group = sessions.worktreeGroups.find((candidate) =>
+    candidate.sessions.some((session) => session.id === node.session.id),
+  );
+  if (!group || group.current) {
+    await vscode.commands.executeCommand(OPEN_SESSION_COMMAND, node);
+    return;
+  }
+  await writeHandoff(context.globalStorageUri.fsPath, {
+    folder: await targetFolder(group),
+    sessionId: node.session.id,
+    createdAt: Date.now(),
+  });
+  await openWorktree(
+    {
+      kind: "worktree",
+      worktree: group.worktree,
+      prefix: group.prefix,
+      sessions: [],
+      current: false,
+    },
+    "newWindow",
   );
 }
 

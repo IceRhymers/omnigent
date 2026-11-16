@@ -59,6 +59,14 @@ export interface CreateSessionInput {
   agentId: string;
   hostId: string;
   workspace: string;
+  /** Ask the host to create a git worktree for this session. */
+  git?: { branchName: string; baseBranch?: string };
+}
+
+export interface CreatedSession {
+  id: string;
+  /** Set when the server created (or bound) a worktree; absent on older servers. */
+  gitBranch?: string;
 }
 
 export class OmnigentApiError extends Error {
@@ -77,7 +85,7 @@ export interface SessionsApiClient {
   listSessions(): Promise<SessionList>;
   listHosts(): Promise<HostSummary[]>;
   listAgents(): Promise<AgentSummary[]>;
-  createSession(input: CreateSessionInput): Promise<string>;
+  createSession(input: CreateSessionInput): Promise<CreatedSession>;
 }
 
 export class SessionsApi implements SessionsApiClient {
@@ -129,7 +137,7 @@ export class SessionsApi implements SessionsApiClient {
     return agents;
   }
 
-  async createSession(input: CreateSessionInput): Promise<string> {
+  async createSession(input: CreateSessionInput): Promise<CreatedSession> {
     const body = await this.request("/v1/sessions", {
       method: "POST",
       // The same Origin the panel's app sends, which the proxy and server's CSRF checks accept.
@@ -139,13 +147,21 @@ export class SessionsApi implements SessionsApiClient {
         agent_id: input.agentId,
         host_id: input.hostId,
         workspace: input.workspace,
+        ...(input.git
+          ? {
+              git: {
+                branch_name: input.git.branchName,
+                ...(input.git.baseBranch ? { base_branch: input.git.baseBranch } : {}),
+              },
+            }
+          : {}),
       },
     });
     const id = stringField(body, "id");
     if (!id) {
       throw new OmnigentApiError("The server created a session without returning its id.", 201);
     }
-    return id;
+    return { id, gitBranch: stringField(body, "git_branch") };
   }
 
   private async listSessionPages(): Promise<SessionList> {

@@ -26,6 +26,13 @@ HTTP API (`server/API.md`); there is nothing new to run on the server side.
   had open when the worktree has it. A worktree row's inline and context actions open
   it in a new or this window, open a terminal there, copy its path, or reveal it in the
   OS file manager. Worktree navigation reads local git and works without a server.
+- **Omnigent: New Session in New Worktree…** (the repo-fork toolbar button) picks a
+  coding agent, a branch name (default `worktree-<hex>`), and a base — the main
+  checkout's HEAD or this window's branch — and asks the host to create the worktree
+  with the session, like the web app's worktree option. A worktree row's **+** creates
+  a session in that worktree without any new branch. A session in another worktree has
+  a **Go to Worktree** action: it opens that worktree's window with the session in the
+  pane, via a short-lived handoff the target window consumes on startup or focus.
 - The view's **+** button (**Omnigent: New Session in This Folder**) picks a coding
   agent, marks agents whose CLI is unavailable on this computer, creates the session in
   the current workspace folder, and opens its composer. The last-used agent comes first.

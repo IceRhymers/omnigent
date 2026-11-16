@@ -139,7 +139,7 @@ describe("SessionsApi", () => {
 
     await expect(
       api.createSession({ agentId: "agent-1", hostId: "host-1", workspace: "/work/repo" }),
-    ).resolves.toBe("conv_new");
+    ).resolves.toEqual({ id: "conv_new", gitBranch: undefined });
 
     const [url, init] = fetchImpl.mock.calls[0];
     expect(url).toBe("http://127.0.0.1:6767/v1/sessions");
@@ -149,6 +149,30 @@ describe("SessionsApi", () => {
       agent_id: "agent-1",
       host_id: "host-1",
       workspace: "/work/repo",
+    });
+  });
+
+  it("asks the host to create a worktree when git options are given", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(json({ id: "conv_new", git_branch: "worktree-abc" }, 201));
+    const api = new SessionsApi("http://127.0.0.1:6767", fetchImpl);
+
+    await expect(
+      api.createSession({
+        agentId: "agent-1",
+        hostId: "host-1",
+        workspace: "/work/repo",
+        git: { branchName: "worktree-abc", baseBranch: "main" },
+      }),
+    ).resolves.toEqual({ id: "conv_new", gitBranch: "worktree-abc" });
+
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      agent_id: "agent-1",
+      host_id: "host-1",
+      workspace: "/work/repo",
+      git: { branch_name: "worktree-abc", base_branch: "main" },
     });
   });
 

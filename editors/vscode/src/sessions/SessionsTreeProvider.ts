@@ -33,6 +33,8 @@ export interface SessionNode {
   kind: "session";
   session: SessionSummary;
   scope: SessionScope;
+  /** The session lives in a worktree other than the one this window has open. */
+  otherWorktree?: boolean;
 }
 
 /** A worktree of an opened repository, with the sessions running in it. */
@@ -133,7 +135,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
     const status = effectiveStatus(session);
     const item = new vscode.TreeItem(sessionTitle(session), vscode.TreeItemCollapsibleState.None);
     item.id = session.id;
-    item.contextValue = "omnigent.session";
+    item.contextValue = node.otherWorktree ? "omnigent.session.otherWorktree" : "omnigent.session";
     item.description = this.sessionDescription(node, status);
     item.tooltip = this.sessionTooltip(node, status);
     item.iconPath = statusIcon(status, sessionUnread(session));
@@ -150,7 +152,12 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
       return this.nodes;
     }
     if (element.kind === "worktree") {
-      return element.sessions.map((session) => ({ kind: "session", session, scope: this.scope }));
+      return element.sessions.map((session) => ({
+        kind: "session",
+        session,
+        scope: this.scope,
+        otherWorktree: !element.current,
+      }));
     }
     return [];
   }

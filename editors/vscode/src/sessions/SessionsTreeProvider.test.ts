@@ -106,7 +106,7 @@ function makeProvider(
     ),
     listHosts: vi.fn(async () => []),
     listAgents: vi.fn(async () => []),
-    createSession: vi.fn(async () => "new-session"),
+    createSession: vi.fn(async () => ({ id: "new-session" })),
   };
   const hostIdReader = vi.fn(async () => `host_${HOST_ID}`);
   const provider = new SessionsTreeProvider(
@@ -359,6 +359,10 @@ describe("SessionsTreeProvider", () => {
       expect(
         provider.getChildren(feature).map((node) => node.kind === "session" && node.session.id),
       ).toEqual(["worktree"]);
+      const [otherSession] = provider.getChildren(feature);
+      expect(provider.getTreeItem(otherSession).contextValue).toBe(
+        "omnigent.session.otherWorktree",
+      );
       expect(provider.worktreeGroups).toHaveLength(2);
     } finally {
       provider.dispose();

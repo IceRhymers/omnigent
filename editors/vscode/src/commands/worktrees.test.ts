@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerWorktreeCommands, targetFolder } from "./worktrees";
@@ -25,17 +25,20 @@ function node(overrides: Partial<WorktreeNode> = {}): WorktreeNode {
   };
 }
 
-function registeredCommands() {
+function registeredCommands(options: { storageDir?: string; groups?: WorktreeNode[] } = {}) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   vi.spyOn(vscode.commands, "registerCommand").mockImplementation((id: string, fn: unknown) => {
     handlers.set(id, fn as (...args: unknown[]) => unknown);
     return { dispose: () => {} };
   });
-  const context = { subscriptions: [] as Array<{ dispose: () => void }> };
+  const context = {
+    subscriptions: [] as Array<{ dispose: () => void }>,
+    globalStorageUri: { fsPath: options.storageDir ?? "/nonexistent-storage" },
+  };
   registerWorktreeCommands(
     context as unknown as vscode.ExtensionContext,
     {
-      worktreeGroups: [],
+      worktreeGroups: options.groups ?? [],
     } as unknown as import("../sessions/SessionsTreeProvider").SessionsTreeProvider,
   );
   return handlers;
@@ -106,6 +109,53 @@ describe("open worktree commands", () => {
 
     await handlers.get("omnigent.openWorktree")?.(node({ current: true }));
 
+    expect(execute).not.toHaveBeenCalledWith(
+      "vscode.openFolder",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+});
+
+describe("go to worktree", () => {
+  it("writes a handoff and opens the session's worktree in a new window", async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), "omnigent-goto-"));
+    try {
+      const group = node({ sessions: [{ id: "s1" } as never] });
+      const handlers = registeredCommands({ storageDir, groups: [group] });
+      const execute = vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
+
+      await handlers.get("omnigent.goToWorktree")?.({
+        kind: "session",
+        session: { id: "s1" },
+        scope: "folder",
+        otherWorktree: true,
+      });
+
+      expect(execute).toHaveBeenCalledWith(
+        "vscode.openFolder",
+        expect.objectContaining({ fsPath: WORKTREE.path }),
+        { forceNewWindow: true, forceReuseWindow: false },
+      );
+      const handoff = JSON.parse(await readFile(join(storageDir, "session-handoff.json"), "utf8"));
+      expect(handoff).toMatchObject({ folder: WORKTREE.path, sessionId: "s1" });
+    } finally {
+      await rm(storageDir, { recursive: true, force: true });
+    }
+  });
+
+  it("opens the session in this window when it isn't in another worktree", async () => {
+    const group = node({ current: true, sessions: [{ id: "s1" } as never] });
+    const handlers = registeredCommands({ groups: [group] });
+    const execute = vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
+
+    await handlers.get("omnigent.goToWorktree")?.({
+      kind: "session",
+      session: { id: "s1" },
+      scope: "folder",
+    });
+
+    expect(execute).toHaveBeenCalledWith("omnigent.openSession", expect.anything());
     expect(execute).not.toHaveBeenCalledWith(
       "vscode.openFolder",
       expect.anything(),

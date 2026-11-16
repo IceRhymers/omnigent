@@ -15,7 +15,7 @@
     "vscode": "^1.74.0"
   },
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "contributes": {
     "configuration": {
       "title": "Omnigent",
@@ -151,6 +151,21 @@
       {
         "command": "omnigent.revealWorktree",
         "title": "Omnigent: Reveal Worktree in Finder"
+      },
+      {
+        "command": "omnigent.newWorktreeSession",
+        "title": "Omnigent: New Session in New Worktree…",
+        "icon": "$(repo-fork)"
+      },
+      {
+        "command": "omnigent.newSessionInWorktree",
+        "title": "Omnigent: New Session in This Worktree",
+        "icon": "$(add)"
+      },
+      {
+        "command": "omnigent.goToWorktree",
+        "title": "Omnigent: Go to Worktree",
+        "icon": "$(go-to-file)"
       }
     ],
     "menus": {
@@ -171,6 +186,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "omnigent.newWorktreeSession",
+          "when": "view == omnigent.sessions && omnigent.sessionsScope == folder",
+          "group": "navigation@0"
+        },
         {
           "command": "omnigent.newSession",
           "when": "view == omnigent.sessions",
@@ -199,14 +219,24 @@
       ],
       "view/item/context": [
         {
-          "command": "omnigent.openWorktree",
+          "command": "omnigent.newSessionInWorktree",
           "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
           "group": "inline@1"
         },
         {
-          "command": "omnigent.worktreeTerminal",
+          "command": "omnigent.openWorktree",
           "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
           "group": "inline@2"
+        },
+        {
+          "command": "omnigent.worktreeTerminal",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "inline@3"
+        },
+        {
+          "command": "omnigent.goToWorktree",
+          "when": "view == omnigent.sessions && viewItem == omnigent.session.otherWorktree",
+          "group": "inline@1"
         },
         {
           "command": "omnigent.openWorktreeInCurrentWindow",
@@ -280,6 +310,17 @@
         },
         {
           "command": "omnigent.revealWorktree",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.newWorktreeSession"
+        },
+        {
+          "command": "omnigent.newSessionInWorktree",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.goToWorktree",
           "when": "false"
         }
       ]
