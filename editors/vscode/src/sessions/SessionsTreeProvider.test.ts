@@ -4,6 +4,23 @@ import type { ServerTarget } from "../config";
 import type { ServerConnection } from "../servers/connection";
 import type { SessionList, SessionsApiClient, SessionSummary } from "./api";
 import { SessionsTreeProvider } from "./SessionsTreeProvider";
+import type { RepositoryWorktrees, Worktree } from "./worktrees";
+
+function worktree(path: string, branch: string | undefined, isMain: boolean): Worktree {
+  return { path, branch, detached: branch === undefined, locked: false, isMain };
+}
+
+const MAIN_WORKTREE = worktree("/work/repo", "main", true);
+const FEATURE_WORKTREE = worktree("/work/repo-worktrees/feature", "feature", false);
+
+function repository(worktrees: Worktree[]): RepositoryWorktrees {
+  return {
+    folder: "/work/repo",
+    prefix: "",
+    worktrees,
+    roots: ["/work/repo", "/work/repo-worktrees/feature"],
+  };
+}
 
 const HOST_ID = "298917f54901428299dee608f20654c6";
 const OTHER_HOST_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -61,7 +78,11 @@ function deferred<T>() {
 
 function makeProvider(
   target: ServerTarget | null = TARGET,
-  options: { scope?: "folder" | "all"; listSessions?: () => Promise<SessionList> } = {},
+  options: {
+    scope?: "folder" | "all";
+    listSessions?: () => Promise<SessionList>;
+    worktrees?: Worktree[];
+  } = {},
 ) {
   const targetChanged = new vscode.EventEmitter<ServerTarget | undefined>();
   const connection = {
@@ -95,7 +116,7 @@ function makeProvider(
     {
       apiFactory: () => api,
       hostIdReader,
-      scopeRoots: async () => ["/work/repo", "/work/repo-worktrees/feature"],
+      repositoryForFolder: async () => repository(options.worktrees ?? [MAIN_WORKTREE]),
       now: () => 200_000,
       pollIntervalMs: 10_000,
     },
@@ -107,9 +128,15 @@ function makeProvider(
 }
 
 function nodeIds(provider: SessionsTreeProvider): string[] {
-  return provider
-    .getChildren()
-    .map((node) => (node.kind === "session" ? node.session.id : node.id));
+  return provider.getChildren().map((node) => {
+    if (node.kind === "session") {
+      return node.session.id;
+    }
+    if (node.kind === "worktree") {
+      return `worktree:${node.worktree.path}`;
+    }
+    return node.id;
+  });
 }
 
 function openRepoFolder(): void {
@@ -299,6 +326,92 @@ describe("SessionsTreeProvider", () => {
     try {
       await provider.refresh();
       expect(nodeIds(provider).at(-1)).toBe("truncated");
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  it("groups sessions by worktree when the repository has several", async () => {
+    openRepoFolder();
+    const { provider } = makeProvider(TARGET, {
+      worktrees: [MAIN_WORKTREE, FEATURE_WORKTREE],
+    });
+    try {
+      await provider.refresh();
+      expect(nodeIds(provider)).toEqual([
+        "worktree:/work/repo",
+        "worktree:/work/repo-worktrees/feature",
+      ]);
+
+      const [current, feature] = provider.getChildren();
+      if (current.kind !== "worktree" || feature.kind !== "worktree") {
+        throw new Error("expected worktree groups");
+      }
+      expect(current.current).toBe(true);
+      expect(provider.getTreeItem(current).collapsibleState).toBe(
+        vscode.TreeItemCollapsibleState.Expanded,
+      );
+      expect(provider.getTreeItem(current).description).toBe("this window");
+      expect(provider.getTreeItem(feature).description).toBe("1 session");
+      expect(
+        provider.getChildren(current).map((node) => node.kind === "session" && node.session.id),
+      ).toEqual(["inside"]);
+      expect(
+        provider.getChildren(feature).map((node) => node.kind === "session" && node.session.id),
+      ).toEqual(["worktree"]);
+      expect(provider.worktreeGroups).toHaveLength(2);
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  it("lists worktrees without sessions and marks waiting and running work", async () => {
+    openRepoFolder();
+    const empty = worktree("/work/repo-worktrees/empty", "empty", false);
+    const { provider } = makeProvider(TARGET, {
+      worktrees: [MAIN_WORKTREE, FEATURE_WORKTREE, empty],
+      listSessions: async () => ({
+        sessions: [
+          session("waiting", "/work/repo-worktrees/feature", HOST_ID, {
+            status: "running",
+            blockedOn: "permission prompt",
+          }),
+          session("running", "/work/repo/src", HOST_ID, { status: "running" }),
+        ],
+        truncated: false,
+      }),
+    });
+    try {
+      await provider.refresh();
+      const [current, feature, emptyNode] = provider.getChildren();
+      if (
+        current.kind !== "worktree" ||
+        feature.kind !== "worktree" ||
+        emptyNode.kind !== "worktree"
+      ) {
+        throw new Error("expected worktree groups");
+      }
+      expect(provider.getTreeItem(current).description).toBe("this window · 1 running");
+      expect(provider.getTreeItem(feature).description).toBe("1 waiting");
+      expect(provider.getTreeItem(emptyNode).description).toBe("no sessions");
+      expect(provider.getTreeItem(emptyNode).collapsibleState).toBe(
+        vscode.TreeItemCollapsibleState.None,
+      );
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  it("stays flat in all scope even with several worktrees", async () => {
+    openRepoFolder();
+    const { provider } = makeProvider(TARGET, {
+      scope: "all",
+      worktrees: [MAIN_WORKTREE, FEATURE_WORKTREE],
+    });
+    try {
+      await provider.refresh();
+      expect(provider.getChildren().every((node) => node.kind !== "worktree")).toBe(true);
+      expect(provider.worktreeGroups).toEqual([]);
     } finally {
       provider.dispose();
     }

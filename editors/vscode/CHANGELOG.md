@@ -9,6 +9,11 @@ All notable changes to the Omnigent VS Code extension are documented here.
 - Open a session from the tree in the editor-beside panel.
 - Create a session in the current workspace folder with a chosen coding agent, with
   last-used ordering and per-host availability.
+- Group sessions by git worktree when the repository has several, with waiting/running
+  counts per worktree and the current window's worktree first.
+- **Omnigent: Switch Worktree…** and worktree row actions to open a worktree in a new or
+  the current window (keeping the opened subfolder), open a terminal there, copy its
+  path, or reveal it in the OS file manager. New `omnigent.worktrees.openIn` setting.
 
 ## [0.1.0]
 

@@ -8,3 +8,10 @@ export const OPEN_SESSION_COMMAND = "omnigent.openSession";
 export const REFRESH_SESSIONS_COMMAND = "omnigent.refreshSessions";
 export const SHOW_FOLDER_SESSIONS_COMMAND = "omnigent.showFolderSessions";
 export const SHOW_ALL_SESSIONS_COMMAND = "omnigent.showAllSessions";
+
+export const SWITCH_WORKTREE_COMMAND = "omnigent.switchWorktree";
+export const OPEN_WORKTREE_COMMAND = "omnigent.openWorktree";
+export const OPEN_WORKTREE_CURRENT_COMMAND = "omnigent.openWorktreeInCurrentWindow";
+export const WORKTREE_TERMINAL_COMMAND = "omnigent.worktreeTerminal";
+export const COPY_WORKTREE_PATH_COMMAND = "omnigent.copyWorktreePath";
+export const REVEAL_WORKTREE_COMMAND = "omnigent.revealWorktree";

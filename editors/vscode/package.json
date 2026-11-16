@@ -24,6 +24,16 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Omnigent server to open. Leave empty to auto-discover a locally running server, or set a localhost URL (e.g. `http://127.0.0.1:6767`) or a remote `https://` URL (e.g. `https://omnigent.example.com`). Remote servers load through a local proxy that signs you in. Use **Omnigent: Connect to Server…** to pick one."
+        },
+        "omnigent.worktrees.openIn": {
+          "type": "string",
+          "enum": ["newWindow", "currentWindow"],
+          "enumDescriptions": [
+            "Open the worktree in a new window, keeping this one where it is.",
+            "Replace this window's folder with the worktree."
+          ],
+          "default": "newWindow",
+          "markdownDescription": "Where **Omnigent: Switch Worktree…** opens the worktree. Opening in this window reloads it."
         }
       }
     },
@@ -114,6 +124,33 @@
         "command": "omnigent.showAllSessions",
         "title": "Omnigent: Show All Sessions",
         "icon": "$(globe)"
+      },
+      {
+        "command": "omnigent.switchWorktree",
+        "title": "Omnigent: Switch Worktree…",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "omnigent.openWorktree",
+        "title": "Omnigent: Open Worktree in New Window",
+        "icon": "$(empty-window)"
+      },
+      {
+        "command": "omnigent.openWorktreeInCurrentWindow",
+        "title": "Omnigent: Open Worktree in This Window"
+      },
+      {
+        "command": "omnigent.worktreeTerminal",
+        "title": "Omnigent: Open Terminal in Worktree",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "omnigent.copyWorktreePath",
+        "title": "Omnigent: Copy Worktree Path"
+      },
+      {
+        "command": "omnigent.revealWorktree",
+        "title": "Omnigent: Reveal Worktree in Finder"
       }
     ],
     "menus": {
@@ -153,6 +190,38 @@
           "command": "omnigent.showAllSessions",
           "when": "view == omnigent.sessions && omnigent.sessionsScope == folder",
           "group": "navigation@3"
+        },
+        {
+          "command": "omnigent.switchWorktree",
+          "when": "view == omnigent.sessions && omnigent.sessionsScope == folder",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "omnigent.openWorktree",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "inline@1"
+        },
+        {
+          "command": "omnigent.worktreeTerminal",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "inline@2"
+        },
+        {
+          "command": "omnigent.openWorktreeInCurrentWindow",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "1_open@1"
+        },
+        {
+          "command": "omnigent.copyWorktreePath",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "2_util@1"
+        },
+        {
+          "command": "omnigent.revealWorktree",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "2_util@2"
         }
       ],
       "commandPalette": [
@@ -189,6 +258,29 @@
         },
         {
           "command": "omnigent.showAllSessions"
+        },
+        {
+          "command": "omnigent.switchWorktree"
+        },
+        {
+          "command": "omnigent.openWorktree",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.openWorktreeInCurrentWindow",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.worktreeTerminal",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.copyWorktreePath",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.revealWorktree",
+          "when": "false"
         }
       ]
     }

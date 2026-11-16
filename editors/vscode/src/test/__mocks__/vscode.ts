@@ -26,6 +26,12 @@ export const window = {
     dispose: () => {},
   }),
   activeColorTheme: { kind: 2 /* Dark */ },
+  createTerminal: (_options: unknown) => ({ show: () => {}, dispose: () => {} }),
+  showQuickPick: async () => undefined,
+};
+
+export const env = {
+  clipboard: { writeText: async (_value: string) => {} },
 };
 
 export const workspace = {
@@ -41,6 +47,11 @@ export const commands = {
 
 export const Uri = {
   parse: (s: string) => ({ toString: () => s, fsPath: s }),
+  file: (path: string) => ({
+    scheme: "file",
+    fsPath: path,
+    toString: () => `file://${path}`,
+  }),
   joinPath: (base: { fsPath: string }, ...parts: string[]) => ({
     toString: () => [base.fsPath, ...parts].join("/"),
     fsPath: [base.fsPath, ...parts].join("/"),

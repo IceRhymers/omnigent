@@ -16,6 +16,7 @@ import { registerConnect } from "./commands/connect";
 import { registerSignOut } from "./commands/signOut";
 import { registerLocalHost } from "./commands/localHost";
 import { registerSessionCommands } from "./commands/sessions";
+import { registerWorktreeCommands } from "./commands/worktrees";
 import { ServerConnection } from "./servers/connection";
 import { SessionsTreeProvider } from "./sessions/SessionsTreeProvider";
 import { SESSIONS_VIEW_ID } from "./sessions/constants";
@@ -57,6 +58,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerSignOut(context, connection);
   registerLocalHost(context, connection, controller);
   registerSessionCommands(context, connection, controller, sessions);
+  registerWorktreeCommands(context, sessions);
 
   // ── Resolve the server now and whenever the setting changes ───────────────
   const active = connection;
