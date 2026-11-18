@@ -1,15 +1,13 @@
 /**
- * Omnigent VS Code extension entry point (iframe build).
+ * Omnigent VS Code extension entry point.
  *
  * activate() wires:
- *  - A minimal Sessions/home tree view (so the activity-bar icon renders) whose
- *    welcome content offers an "Open Omnigent" button
+ *  - The activity-bar Sessions tree, scoped to this folder or all sessions
+ *  - Commands to open sessions and create one here with a chosen harness
  *  - EditorPanelController: the single editor-beside iframe surface
- *  - ServerConnection: local-server discovery, or a remote server through the
- *    local credential proxy, re-resolved when `omnigent.serverUrl` changes
- *  - The omnigent.open, omnigent.connect, and omnigent.signOut commands
- *  - Commands that run the `omnigent` CLI to start Omnigent on this computer,
- *    host on the connected server, or set up Unity Gateway models
+ *  - ServerConnection: local discovery or a remote credential proxy, shared by
+ *    the panel and Sessions tree and re-resolved when serverUrl changes
+ *  - CLI commands to start Omnigent, host on a server, or set up models
  */
 import * as vscode from "vscode";
 import { EditorPanelController } from "./panel/EditorPanelController";
@@ -17,28 +15,15 @@ import { registerOpenPanel } from "./commands/openPanel";
 import { registerConnect } from "./commands/connect";
 import { registerSignOut } from "./commands/signOut";
 import { registerLocalHost } from "./commands/localHost";
+import { registerSessionCommands } from "./commands/sessions";
 import { ServerConnection } from "./servers/connection";
-
-/** Id of the minimal activity-bar view (declared in package.json contributes.views). */
-const HOME_VIEW_ID = "omnigent.home";
+import { SessionsTreeProvider } from "./sessions/SessionsTreeProvider";
+import { SESSIONS_VIEW_ID } from "./sessions/constants";
 
 let output: vscode.OutputChannel | undefined;
 let controller: EditorPanelController | undefined;
 let connection: ServerConnection | undefined;
-
-/**
- * A no-op tree provider. A `viewsContainer` only renders its activity-bar icon
- * when it has at least one registered view; this provides that view. The actual
- * call-to-action is the `viewsWelcome` "Open Omnigent" button in package.json.
- */
-class HomeTreeProvider implements vscode.TreeDataProvider<never> {
-  getTreeItem(element: never): vscode.TreeItem {
-    return element;
-  }
-  getChildren(): never[] {
-    return [];
-  }
-}
+let sessions: SessionsTreeProvider | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("Omnigent");
@@ -50,16 +35,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   connection = new ServerConnection(context, controller, output);
   context.subscriptions.push(connection);
 
-  // ── Minimal activity-bar view (makes the container icon render) ────────────
+  // ── Activity-bar Sessions tree ────────────────────────────────────────────
+  sessions = new SessionsTreeProvider(context, connection, output);
+  context.subscriptions.push(sessions);
+  const sessionsView = vscode.window.createTreeView(SESSIONS_VIEW_ID, {
+    treeDataProvider: sessions,
+    showCollapseAll: false,
+  });
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider(HOME_VIEW_ID, new HomeTreeProvider()),
+    sessionsView,
+    sessionsView.onDidChangeVisibility((event) => sessions?.setVisible(event.visible)),
+    vscode.window.onDidChangeWindowState((event) => sessions?.setWindowFocused(event.focused)),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => sessions?.refreshIfVisible()),
   );
+  sessions.setWindowFocused(vscode.window.state.focused);
+  sessions.setVisible(sessionsView.visible);
 
   // ── Commands ───────────────────────────────────────────────────────────────
   registerOpenPanel(context, controller);
   registerConnect(context, connection, controller);
   registerSignOut(context, connection);
   registerLocalHost(context, connection, controller);
+  registerSessionCommands(context, connection, controller, sessions);
 
   // ── Resolve the server now and whenever the setting changes ───────────────
   const active = connection;
@@ -76,6 +73,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export function deactivate(): void {
+  sessions?.dispose();
+  sessions = undefined;
   connection?.dispose();
   connection = undefined;
   controller?.dispose();

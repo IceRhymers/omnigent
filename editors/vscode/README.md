@@ -1,25 +1,29 @@
 # Omnigent for VS Code
 
-A minimal VS Code extension that opens Omnigent inside the editor — an editor-beside
-pane that frames the same UI you see in your browser. It works with your **running
-local Omnigent server** (`http://127.0.0.1:6767`) or a **remote Omnigent server** you
-sign in to. It is a thin client of the server's existing HTTP API (`server/API.md`);
-there is nothing new to run on the server side.
-
-This started as a deliberately small donation (tracking
-[omnigent-ai/omnigent#1219](https://github.com/omnigent-ai/omnigent/issues/1219)):
-localhost discovery, the editor iframe pane, and the activity-bar / editor-title icons.
-Sessions, diffs, send-selection, and embedded rendering are intentionally out of scope
-for now.
+A VS Code extension that opens Omnigent inside the editor — an activity-bar Sessions
+view and an editor-beside pane that frames the same UI you see in your browser. It
+works with your **running local Omnigent server** (`http://127.0.0.1:6767`) or a
+**remote Omnigent server** you sign in to. It is a thin client of the server's existing
+HTTP API (`server/API.md`); there is nothing new to run on the server side.
 
 ## How it works
 
 - On activation the extension discovers a locally running server via
   `~/.omnigent/local_server.pid` and a `/health` probe, or uses `omnigent.serverUrl`
   when it is set.
-- The Omnigent activity-bar view offers an **Open Omnigent** button. The
-  **Omnigent: Open** command (`omnigent.open`) — also on the editor title bar and in the
-  command palette — opens an editor-beside pane that frames the server.
+- The Omnigent activity-bar view lists your sessions. **This Folder** (the default)
+  shows sessions running on this computer in any open workspace folder, including every
+  git worktree of its repository. Use the folder/globe toolbar button to switch between
+  that scope and **All Sessions**. Click a session to open it in the editor-beside pane.
+- The view's **+** button (**Omnigent: New Session in This Folder**) picks a coding
+  agent, marks agents whose CLI is unavailable on this computer, creates the session in
+  the current workspace folder, and opens its composer. The last-used agent comes first.
+  If this computer is not an online host on the connected server, the command offers to
+  connect it first.
+- The **Omnigent: Open** command (`omnigent.open`) — also on the editor title bar and in
+  the command palette — opens the pane. The Sessions view refreshes itself while it is
+  visible and the window is focused; its refresh button reloads it on demand. It checks
+  the 1,000 most recently updated sessions.
 - A **local** server is framed directly; it is loopback and needs no auth, so no token
   ever appears in the iframe URL.
 - A **remote** server is framed through a proxy the extension runs on `127.0.0.1`. The
@@ -122,6 +126,8 @@ browser instead.
 
 ## Known limitations
 
+- Opening a different session from the tree reloads the framed app at that session;
+  navigation within the app itself does not reload it.
 - On macOS, VS Code does not deliver `Cmd+A/C/V` keystrokes into a cross-origin iframe
   inside a webview, so keyboard paste into the framed app's inputs does not work there.
   This is an upstream VS Code issue, not fixable from the extension for the iframe
@@ -168,8 +174,9 @@ workspaces still works; run `build:web-ui` before debugging one with F5.
 ```
 src/
 ├── extension.ts        # activate()/deactivate() — wires the panel, connection, commands, view
-├── commands/           # open, connect, signOut, and the start/host/setup commands
+├── commands/           # open/connect/session commands and start/host/setup commands
 ├── cli/                # find the omnigent CLI and run it in a task terminal
+├── sessions/           # Sessions tree, HTTP client, host identity, scopes, harness labels
 ├── panel/              # EditorPanelController, host.ts (render), iframeHtml.ts, csp.ts
 ├── config/             # settings + server-target resolution
 ├── discovery/          # local-server discovery (pidfile / health / liveness)

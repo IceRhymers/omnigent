@@ -31,6 +31,8 @@ type PanelState =
 export class EditorPanelController {
   private panel?: vscode.WebviewPanel;
   private state: PanelState = { kind: "resolving" };
+  private routePath = "/";
+  private targetBaseUrl: string | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -43,11 +45,25 @@ export class EditorPanelController {
    * "Resolving…" placeholder.
    */
   setResolved(target: ServerTarget): void {
+    if (this.targetBaseUrl !== undefined && this.targetBaseUrl !== target.baseUrl) {
+      this.routePath = "/";
+    }
+    this.targetBaseUrl = target.baseUrl;
     this.setState({ kind: "resolved", target });
+  }
+
+  /** Open an in-app route, such as `/c/<session-id>`, and reveal the panel. */
+  openPath(path: string): void {
+    if (!path.startsWith("/") || path.startsWith("//")) {
+      throw new Error(`refusing to navigate to a non-app path: ${path}`);
+    }
+    this.routePath = path;
+    this.ensure();
   }
 
   /** Show the placeholder, e.g. while connecting to a remote server. */
   setResolving(text?: string): void {
+    this.routePath = "/";
     this.setState({ kind: "resolving", text });
   }
 
@@ -138,6 +154,7 @@ export class EditorPanelController {
       case "resolved":
         renderInto(webview, {
           target: this.state.target,
+          path: this.routePath,
           log: (m) => this.output.appendLine(m),
         });
     }

@@ -4,7 +4,7 @@
  * active proxy and re-resolves whenever `omnigent.serverUrl` changes.
  */
 import * as vscode from "vscode";
-import { resolveServerTarget, type TargetResolution } from "../config";
+import { resolveServerTarget, type ServerTarget, type TargetResolution } from "../config";
 import { readSettings } from "../config/vscodeSettings";
 import { DEFAULT_HEALTH_TIMEOUT_MS, discoverLocalServer } from "../discovery";
 import { ServerCredentials } from "../auth/credentials";
@@ -57,6 +57,9 @@ interface RemoteSetup {
 export class ServerConnection implements vscode.Disposable {
   private active: ActiveRemote | undefined;
   private attempt = 0;
+  private resolvedTarget: ServerTarget | undefined;
+  private readonly targetChanged = new vscode.EventEmitter<ServerTarget | undefined>();
+  readonly onDidChangeTarget = this.targetChanged.event;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -84,6 +87,7 @@ export class ServerConnection implements vscode.Disposable {
 
   private async connect(attempt: number): Promise<void> {
     await this.closeActive();
+    this.updateTarget(undefined);
     const settings = readSettings();
     let resolution: TargetResolution;
     if (settings.serverUrl.trim() !== "") {
@@ -102,7 +106,7 @@ export class ServerConnection implements vscode.Disposable {
     }
     switch (resolution.status) {
       case "resolved":
-        this.controller.setResolved(resolution.target);
+        this.updateTarget(resolution.target);
         this.log(
           `target: ${resolution.target.baseUrl} (hostType=${resolution.target.hostType}, source=${resolution.target.source})`,
         );
@@ -114,6 +118,11 @@ export class ServerConnection implements vscode.Disposable {
         this.log(`no server to show (${resolution.reason})`);
         this.controller.setMessage(this.needsPromptMessage(resolution.reason));
     }
+  }
+
+  /** The server the panel and Sessions view use, once it has resolved. */
+  get serverTarget(): ServerTarget | undefined {
+    return this.resolvedTarget;
   }
 
   /** The connected remote server as users open it, or undefined when none is. */
@@ -136,6 +145,8 @@ export class ServerConnection implements vscode.Disposable {
 
   dispose(): void {
     this.attempt++;
+    this.resolvedTarget = undefined;
+    this.targetChanged.dispose();
     void this.closeActive();
   }
 
@@ -205,7 +216,7 @@ export class ServerConnection implements vscode.Disposable {
       return;
     }
     this.active = { serverUrl: displayUrl, proxy, credentials };
-    this.controller.setResolved({
+    this.updateTarget({
       baseUrl: proxy.entryUrl,
       origin: proxy.origin,
       hostType: "remote",
@@ -448,6 +459,17 @@ export class ServerConnection implements vscode.Disposable {
             retry,
           ],
         };
+    }
+  }
+
+  private updateTarget(target: ServerTarget | undefined): void {
+    const changed = this.resolvedTarget?.baseUrl !== target?.baseUrl;
+    this.resolvedTarget = target;
+    if (target) {
+      this.controller.setResolved(target);
+    }
+    if (changed) {
+      this.targetChanged.fire(target);
     }
   }
 

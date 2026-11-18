@@ -30,6 +30,8 @@ export const window = {
 
 export const workspace = {
   getConfiguration: () => ({ get: (_key: string, def: unknown) => def }),
+  workspaceFolders: undefined,
+  getWorkspaceFolder: () => undefined,
 };
 
 export const commands = {
@@ -47,6 +49,43 @@ export const Uri = {
 
 export const ViewColumn = { Active: -1, Beside: -2, One: 1, Two: 2 };
 export const ColorThemeKind = { Light: 1, Dark: 2, HighContrast: 3, HighContrastLight: 4 };
+
+export class EventEmitter<T> {
+  private listeners: Array<(event: T) => void> = [];
+
+  event = (listener: (event: T) => void) => {
+    this.listeners.push(listener);
+    return {
+      dispose: () => {
+        this.listeners = this.listeners.filter((candidate) => candidate !== listener);
+      },
+    };
+  };
+
+  fire(event: T): void {
+    for (const listener of [...this.listeners]) {
+      listener(event);
+    }
+  }
+
+  dispose(): void {
+    this.listeners = [];
+  }
+}
+
+export class ThemeIcon {
+  constructor(
+    readonly id: string,
+    readonly color?: ThemeColor,
+  ) {}
+}
+
+export class ThemeColor {
+  constructor(readonly id: string) {}
+}
+
+export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
+export const QuickPickItemKind = { Separator: -1, Default: 0 };
 
 export const TreeItem = class {
   label: string;
