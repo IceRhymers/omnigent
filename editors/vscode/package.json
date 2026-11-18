@@ -1,7 +1,7 @@
 {
   "name": "omnigent-vscode",
   "displayName": "Omnigent",
-  "description": "Open your running local Omnigent server inside VS Code, in an editor-beside iframe.",
+  "description": "Open Omnigent inside VS Code, in an editor-beside panel: your local server, or a remote one you sign in to.",
   "version": "0.1.0",
   "publisher": "databricks",
   "license": "Apache-2.0",
@@ -15,7 +15,7 @@
     "vscode": "^1.74.0"
   },
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "contributes": {
     "configuration": {
       "title": "Omnigent",
@@ -23,7 +23,17 @@
         "omnigent.serverUrl": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Manual Omnigent server URL override for a **localhost** server (e.g. `http://127.0.0.1:6767`). Leave empty to auto-discover a locally running Omnigent server. Non-localhost URLs are not supported in this build."
+          "markdownDescription": "Omnigent server to open. Leave empty to auto-discover a locally running server, or set a localhost URL (e.g. `http://127.0.0.1:6767`) or a remote `https://` URL (e.g. `https://omnigent.example.com`). Remote servers load through a local proxy that signs you in. Use **Omnigent: Connect to Server…** to pick one."
+        },
+        "omnigent.worktrees.openIn": {
+          "type": "string",
+          "enum": ["newWindow", "currentWindow"],
+          "enumDescriptions": [
+            "Open the worktree in a new window, keeping this one where it is.",
+            "Replace this window's folder with the worktree."
+          ],
+          "default": "newWindow",
+          "markdownDescription": "Where **Omnigent: Switch Worktree…** opens the worktree. Opening in this window reloads it."
         }
       }
     },
@@ -40,15 +50,29 @@
       "omnigent-container": [
         {
           "type": "tree",
-          "id": "omnigent.home",
-          "name": "Omnigent"
+          "id": "omnigent.sessions",
+          "name": "Sessions"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "omnigent.home",
-        "contents": "Open the running Omnigent server UI in an editor tab.\n[Open Omnigent](command:omnigent.open)\nStart a local server with `omnigent server`, or set `omnigent.serverUrl` to a localhost URL."
+        "view": "omnigent.sessions",
+        "contents": "Open Omnigent in an editor tab.\n[Open Omnigent](command:omnigent.open)\nNo server yet? [Start Omnigent on this computer](command:omnigent.startLocal), or [connect to a remote server](command:omnigent.connect).\nRoute your coding agents through Databricks: [set up Unity Gateway](command:omnigent.setUpUnityGateway)."
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "omnigent",
+        "required": [
+          "runId"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "description": "Identifies one `omnigent` command the extension ran."
+          }
+        }
       }
     ],
     "commands": [
@@ -56,6 +80,92 @@
         "command": "omnigent.open",
         "title": "Omnigent: Open",
         "icon": "media/omnigent-icon.svg"
+      },
+      {
+        "command": "omnigent.connect",
+        "title": "Omnigent: Connect to Server…"
+      },
+      {
+        "command": "omnigent.signOut",
+        "title": "Omnigent: Sign Out of Server"
+      },
+      {
+        "command": "omnigent.startLocal",
+        "title": "Omnigent: Start on This Computer"
+      },
+      {
+        "command": "omnigent.hostHere",
+        "title": "Omnigent: Use This Computer as a Host"
+      },
+      {
+        "command": "omnigent.setUpUnityGateway",
+        "title": "Omnigent: Set Up Unity Gateway…"
+      },
+      {
+        "command": "omnigent.newSession",
+        "title": "Omnigent: New Session in This Folder",
+        "icon": "$(add)"
+      },
+      {
+        "command": "omnigent.openSession",
+        "title": "Omnigent: Open Session"
+      },
+      {
+        "command": "omnigent.refreshSessions",
+        "title": "Omnigent: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "omnigent.showFolderSessions",
+        "title": "Omnigent: Show Sessions in This Folder",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "omnigent.showAllSessions",
+        "title": "Omnigent: Show All Sessions",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "omnigent.switchWorktree",
+        "title": "Omnigent: Switch Worktree…",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "omnigent.openWorktree",
+        "title": "Omnigent: Open Worktree in New Window",
+        "icon": "$(empty-window)"
+      },
+      {
+        "command": "omnigent.openWorktreeInCurrentWindow",
+        "title": "Omnigent: Open Worktree in This Window"
+      },
+      {
+        "command": "omnigent.worktreeTerminal",
+        "title": "Omnigent: Open Terminal in Worktree",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "omnigent.copyWorktreePath",
+        "title": "Omnigent: Copy Worktree Path"
+      },
+      {
+        "command": "omnigent.revealWorktree",
+        "title": "Omnigent: Reveal Worktree in Finder"
+      },
+      {
+        "command": "omnigent.newWorktreeSession",
+        "title": "Omnigent: New Session in New Worktree…",
+        "icon": "$(repo-fork)"
+      },
+      {
+        "command": "omnigent.newSessionInWorktree",
+        "title": "Omnigent: New Session in This Worktree",
+        "icon": "$(add)"
+      },
+      {
+        "command": "omnigent.goToWorktree",
+        "title": "Omnigent: Go to Worktree",
+        "icon": "$(go-to-file)"
       }
     ],
     "menus": {
@@ -63,20 +173,165 @@
         {
           "command": "omnigent.open",
           "group": "navigation@99"
+        },
+        {
+          "command": "omnigent.hostHere",
+          "when": "activeWebviewPanelId == 'omnigent'",
+          "group": "1_omnigent@1"
+        },
+        {
+          "command": "omnigent.setUpUnityGateway",
+          "when": "activeWebviewPanelId == 'omnigent'",
+          "group": "1_omnigent@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "omnigent.newWorktreeSession",
+          "when": "view == omnigent.sessions && omnigent.sessionsScope == folder",
+          "group": "navigation@0"
+        },
+        {
+          "command": "omnigent.newSession",
+          "when": "view == omnigent.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "omnigent.refreshSessions",
+          "when": "view == omnigent.sessions",
+          "group": "navigation@2"
+        },
+        {
+          "command": "omnigent.showFolderSessions",
+          "when": "view == omnigent.sessions && omnigent.sessionsScope == all",
+          "group": "navigation@3"
+        },
+        {
+          "command": "omnigent.showAllSessions",
+          "when": "view == omnigent.sessions && omnigent.sessionsScope == folder",
+          "group": "navigation@3"
+        },
+        {
+          "command": "omnigent.switchWorktree",
+          "when": "view == omnigent.sessions && omnigent.sessionsScope == folder",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "omnigent.newSessionInWorktree",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "inline@1"
+        },
+        {
+          "command": "omnigent.openWorktree",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "inline@2"
+        },
+        {
+          "command": "omnigent.worktreeTerminal",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "inline@3"
+        },
+        {
+          "command": "omnigent.goToWorktree",
+          "when": "view == omnigent.sessions && viewItem == omnigent.session.otherWorktree",
+          "group": "inline@1"
+        },
+        {
+          "command": "omnigent.openWorktreeInCurrentWindow",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "1_open@1"
+        },
+        {
+          "command": "omnigent.copyWorktreePath",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "2_util@1"
+        },
+        {
+          "command": "omnigent.revealWorktree",
+          "when": "view == omnigent.sessions && viewItem == omnigent.worktree",
+          "group": "2_util@2"
         }
       ],
       "commandPalette": [
         {
           "command": "omnigent.open"
+        },
+        {
+          "command": "omnigent.connect"
+        },
+        {
+          "command": "omnigent.signOut"
+        },
+        {
+          "command": "omnigent.startLocal"
+        },
+        {
+          "command": "omnigent.hostHere"
+        },
+        {
+          "command": "omnigent.setUpUnityGateway"
+        },
+        {
+          "command": "omnigent.newSession"
+        },
+        {
+          "command": "omnigent.openSession",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.refreshSessions"
+        },
+        {
+          "command": "omnigent.showFolderSessions"
+        },
+        {
+          "command": "omnigent.showAllSessions"
+        },
+        {
+          "command": "omnigent.switchWorktree"
+        },
+        {
+          "command": "omnigent.openWorktree",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.openWorktreeInCurrentWindow",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.worktreeTerminal",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.copyWorktreePath",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.revealWorktree",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.newWorktreeSession"
+        },
+        {
+          "command": "omnigent.newSessionInWorktree",
+          "when": "false"
+        },
+        {
+          "command": "omnigent.goToWorktree",
+          "when": "false"
         }
       ]
     }
   },
   "scripts": {
     "build": "node esbuild.js",
+    "build:web-ui": "node scripts/build-web-ui.js",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
-    "package": "vsce package"
+    "package": "node scripts/build-web-ui.js && vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

@@ -7,6 +7,7 @@ src/**
 
 # Dev tooling / config
 esbuild.js
+scripts/**
 tsconfig.json
 vitest.config.ts
 **/*.test.*
@@ -20,5 +21,5 @@ vitest.config.ts
 # Dependencies are bundled into dist/ by esbuild — not needed in the package
 node_modules/**
 
-# Keep (NOT ignored): dist/** (the bundled extension), media/** (icons),
-# package.json, README.md, LICENSE
+# Keep (NOT ignored): dist/** (the bundled extension, and dist/web-ui, the app
+# served for Databricks workspaces), media/** (icons), package.json, README.md, LICENSE

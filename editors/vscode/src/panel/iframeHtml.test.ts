@@ -30,6 +30,18 @@ describe("buildIframeHtml", () => {
     expect(html).not.toContain('src="http://127.0.0.1:6767/"');
   });
 
+  it("opens a session route under the same framed base URL", () => {
+    const html = buildIframeHtml({ ...baseOpts, path: "/c/conv_123" });
+    expect(html).toContain('src="http://127.0.0.1:6767/c/conv_123"');
+  });
+
+  it("refuses routes that could navigate to another origin", () => {
+    expect(() => buildIframeHtml({ ...baseOpts, path: "//evil.example" })).toThrow("non-app path");
+    expect(() => buildIframeHtml({ ...baseOpts, path: "https://evil.example" })).toThrow(
+      "non-app path",
+    );
+  });
+
   it("stamps the nonce on the style", () => {
     expect(buildIframeHtml(baseOpts)).toContain(`<style nonce="${NONCE}">`);
   });
