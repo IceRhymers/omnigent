@@ -14,7 +14,9 @@ import {
   type SessionsApiClient,
 } from "./api";
 import { readLocalHostId } from "./hostIdentity";
-import { sessionInFolderScope, workspaceScopeRoots } from "./scope";
+import { sessionInFolderScope } from "./scope";
+import { repositoryWorktrees, worktreeForWorkspace, type Worktree } from "./worktrees";
+import type { RepositoryWorktrees } from "./worktrees";
 import { relativeTime, sessionHarnessLabel, sessionTitle } from "./harnesses";
 import {
   NEW_SESSION_COMMAND,
@@ -31,6 +33,19 @@ export interface SessionNode {
   kind: "session";
   session: SessionSummary;
   scope: SessionScope;
+  /** The session lives in a worktree other than the one this window has open. */
+  otherWorktree?: boolean;
+}
+
+/** A worktree of an opened repository, with the sessions running in it. */
+export interface WorktreeNode {
+  kind: "worktree";
+  worktree: Worktree;
+  /** The opened folder's path inside the worktree, so navigation keeps the subfolder. */
+  prefix: string;
+  sessions: SessionSummary[];
+  /** This window has this worktree (or a folder in it) open. */
+  current: boolean;
 }
 
 interface MessageNode {
@@ -42,12 +57,12 @@ interface MessageNode {
   command?: vscode.Command;
 }
 
-type TreeNode = SessionNode | MessageNode;
+type TreeNode = SessionNode | WorktreeNode | MessageNode;
 
 export interface SessionsTreeProviderOptions {
   apiFactory?: (target: ServerTarget) => SessionsApiClient;
   hostIdReader?: () => Promise<string | undefined>;
-  scopeRoots?: (folder: string) => Promise<string[]>;
+  repositoryForFolder?: (folder: string) => Promise<RepositoryWorktrees>;
   now?: () => number;
   pollIntervalMs?: number;
 }
@@ -58,10 +73,11 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
   private readonly disposables: vscode.Disposable[] = [];
   private readonly apiFactory: (target: ServerTarget) => SessionsApiClient;
   private readonly hostIdReader: () => Promise<string | undefined>;
-  private readonly scopeRoots: (folder: string) => Promise<string[]>;
+  private readonly repositoryForFolder: (folder: string) => Promise<RepositoryWorktrees>;
   private readonly now: () => number;
   private readonly pollIntervalMs: number;
   private nodes: TreeNode[] = [];
+  private groups: WorktreeNode[] = [];
   private scope: SessionScope;
   private visible = false;
   private windowFocused = true;
@@ -79,7 +95,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
   ) {
     this.apiFactory = options.apiFactory ?? SessionsApi.forTarget;
     this.hostIdReader = options.hostIdReader ?? readLocalHostId;
-    this.scopeRoots = options.scopeRoots ?? workspaceScopeRoots;
+    this.repositoryForFolder = options.repositoryForFolder ?? repositoryWorktrees;
     this.now = options.now ?? Date.now;
     this.pollIntervalMs = options.pollIntervalMs ?? 10_000;
     this.scope = context.workspaceState.get<SessionScope>(SESSION_SCOPE_STATE_KEY, "folder");
@@ -112,11 +128,14 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
       item.tooltip = node.description ?? node.label;
       return item;
     }
+    if (node.kind === "worktree") {
+      return this.worktreeTreeItem(node);
+    }
     const { session } = node;
     const status = effectiveStatus(session);
     const item = new vscode.TreeItem(sessionTitle(session), vscode.TreeItemCollapsibleState.None);
     item.id = session.id;
-    item.contextValue = "omnigent.session";
+    item.contextValue = node.otherWorktree ? "omnigent.session.otherWorktree" : "omnigent.session";
     item.description = this.sessionDescription(node, status);
     item.tooltip = this.sessionTooltip(node, status);
     item.iconPath = statusIcon(status, sessionUnread(session));
@@ -129,7 +148,23 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
   }
 
   getChildren(element?: TreeNode): TreeNode[] {
-    return element ? [] : this.nodes;
+    if (!element) {
+      return this.nodes;
+    }
+    if (element.kind === "worktree") {
+      return element.sessions.map((session) => ({
+        kind: "session",
+        session,
+        scope: this.scope,
+        otherWorktree: !element.current,
+      }));
+    }
+    return [];
+  }
+
+  /** The worktree groups from the last folder-scope load, for the Switch Worktree picker. */
+  get worktreeGroups(): readonly WorktreeNode[] {
+    return this.groups;
   }
 
   setVisible(visible: boolean): void {
@@ -207,6 +242,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
     const target = this.connection.serverTarget;
     if (!target) {
       this.nodes = [];
+      this.groups = [];
       this.hasLoaded = false;
       this.changed.fire();
       return;
@@ -222,6 +258,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
       this.disposed || this.scope !== scope || this.connection.serverTarget?.baseUrl !== baseUrl;
     const folders = workspaceFolders();
     if (scope === "folder" && folders.length === 0) {
+      this.groups = [];
       this.nodes = [
         message("no-folder", "Open a folder to see its sessions", undefined, "folder-opened"),
         message("show-all", "Show All Sessions", undefined, "globe", {
@@ -235,19 +272,19 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
     }
     try {
       const api = this.apiFactory(target);
-      const [list, hostId, roots] = await Promise.all([
+      const [list, hostId, repositories] = await Promise.all([
         api.listSessions(),
         scope === "folder" ? this.hostIdReader() : Promise.resolve(undefined),
         scope === "folder"
-          ? Promise.all(folders.map((folder) => this.scopeRoots(folder))).then((groups) =>
-              groups.flat(),
-            )
+          ? Promise.all(folders.map((folder) => this.repositoryForFolder(folder)))
           : Promise.resolve([]),
       ]);
+      const roots = repositories.flatMap((repository) => repository.roots);
       if (superseded()) {
         return;
       }
       if (scope === "folder" && !hostId) {
+        this.groups = [];
         this.nodes = [
           message(
             "no-host",
@@ -266,7 +303,11 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
           scope === "folder" && hostId
             ? list.sessions.filter((session) => sessionInFolderScope(session, roots, hostId))
             : list.sessions;
-        this.nodes = sessionNodes(visibleSessions, scope, folders, list.truncated);
+        this.groups = scope === "folder" ? worktreeGroups(visibleSessions, repositories) : [];
+        this.nodes =
+          this.groups.length > 0
+            ? groupNodes(this.groups, visibleSessions, repositories, list.truncated)
+            : sessionNodes(visibleSessions, scope, folders, list.truncated);
       }
       this.hasLoaded = true;
       this.changed.fire();
@@ -287,6 +328,56 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
         this.changed.fire();
       }
     }
+  }
+
+  private worktreeTreeItem(node: WorktreeNode): vscode.TreeItem {
+    const { worktree } = node;
+    const item = new vscode.TreeItem(
+      worktree.branch ?? basename(worktree.path),
+      node.sessions.length > 0 || node.current
+        ? node.current
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None,
+    );
+    item.id = `worktree:${worktree.path}`;
+    item.contextValue = "omnigent.worktree";
+    item.iconPath = new vscode.ThemeIcon(worktree.isMain ? "repo" : "git-branch");
+    const waiting = node.sessions.filter(
+      (session) => effectiveStatus(session) === "waiting",
+    ).length;
+    const running = node.sessions.filter(
+      (session) => effectiveStatus(session) === "running",
+    ).length;
+    const parts: string[] = [];
+    if (node.current) {
+      parts.push("this window");
+    }
+    if (worktree.detached) {
+      parts.push("detached");
+    }
+    if (waiting > 0) {
+      parts.push(`${waiting} waiting`);
+    }
+    if (running > 0) {
+      parts.push(`${running} running`);
+    }
+    if (parts.length === 0) {
+      parts.push(
+        node.sessions.length === 0
+          ? "no sessions"
+          : `${node.sessions.length} session${node.sessions.length === 1 ? "" : "s"}`,
+      );
+    }
+    item.description = parts.join(" · ");
+    item.tooltip = [
+      worktree.branch ?? "Detached HEAD",
+      worktree.path,
+      node.current ? "Open in this window" : undefined,
+    ]
+      .filter((line) => line !== undefined)
+      .join("\n");
+    return item;
   }
 
   private sessionDescription(node: SessionNode, status: SessionStatus): string {
@@ -398,8 +489,97 @@ function sessionNodes(
   return nodes;
 }
 
+/**
+ * Group sessions by worktree for repositories that have more than one. Sessions
+ * in single-checkout repositories and plain folders stay in the flat list.
+ */
+function worktreeGroups(
+  sessions: readonly SessionSummary[],
+  repositories: readonly RepositoryWorktrees[],
+): WorktreeNode[] {
+  const groups: WorktreeNode[] = [];
+  for (const repository of repositories) {
+    if (repository.worktrees.length < 2) {
+      continue;
+    }
+    const current = worktreeForWorkspace(repository.worktrees, repository.folder);
+    for (const worktree of repository.worktrees) {
+      groups.push({
+        kind: "worktree",
+        worktree,
+        prefix: repository.prefix,
+        sessions: sessions.filter(
+          (session) => worktreeForWorkspace(repository.worktrees, session.workspace) === worktree,
+        ),
+        current: current === worktree,
+      });
+    }
+  }
+  return groups;
+}
+
+function groupNodes(
+  groups: readonly WorktreeNode[],
+  sessions: readonly SessionSummary[],
+  repositories: readonly RepositoryWorktrees[],
+  truncated: boolean,
+): TreeNode[] {
+  const sorted = [...groups].sort(compareWorktreeGroups);
+  const grouped = new Set(groups.flatMap((group) => group.sessions.map((session) => session.id)));
+  const nodes: TreeNode[] = [...sorted];
+  // Sessions whose path no live worktree matches (e.g. a removed worktree or a
+  // single-checkout repository) keep their flat rows under the groups.
+  for (const session of sessions) {
+    if (!grouped.has(session.id)) {
+      nodes.push({ kind: "session", session, scope: "folder" });
+    }
+  }
+  if (nodes.length === 0) {
+    return sessionNodes(
+      sessions,
+      "folder",
+      repositories.map((repo) => repo.folder),
+      truncated,
+    );
+  }
+  if (truncated) {
+    nodes.push(
+      message(
+        "truncated",
+        "Older sessions aren't listed",
+        `Only the ${MAX_LISTED_SESSIONS.toLocaleString("en-US")} most recently updated sessions are checked.`,
+        "info",
+      ),
+    );
+  }
+  return nodes;
+}
+
+function compareWorktreeGroups(a: WorktreeNode, b: WorktreeNode): number {
+  if (a.current !== b.current) {
+    return a.current ? -1 : 1;
+  }
+  const rank = (group: WorktreeNode) => {
+    if (group.sessions.some((session) => effectiveStatus(session) === "waiting")) {
+      return 0;
+    }
+    if (group.sessions.some((session) => effectiveStatus(session) === "running")) {
+      return 1;
+    }
+    return group.sessions.length > 0 ? 2 : 3;
+  };
+  const rankDifference = rank(a) - rank(b);
+  if (rankDifference !== 0) {
+    return rankDifference;
+  }
+  const updated =
+    Math.max(0, ...b.sessions.map((session) => session.updatedAt)) -
+    Math.max(0, ...a.sessions.map((session) => session.updatedAt));
+  return updated !== 0 ? updated : a.worktree.path.localeCompare(b.worktree.path);
+}
+
 /** The web sidebar's status: prompts (web or terminal) first, then running, failed, background work. */
-function effectiveStatus(session: SessionSummary): SessionStatus {
+export function effectiveStatus(session: SessionSummary): SessionStatus {
   if (session.pendingElicitationsCount > 0) {
     return "waiting";
   }

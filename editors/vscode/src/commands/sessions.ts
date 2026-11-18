@@ -2,15 +2,25 @@
 import * as vscode from "vscode";
 import type { EditorPanelController } from "../panel/EditorPanelController";
 import type { ServerConnection } from "../servers/connection";
+import type { ServerTarget } from "../config";
 import { HOST_HERE_COMMAND } from "./localHost";
 import { NetworkError } from "../net/request";
-import { SessionsApi } from "../sessions/api";
+import { SessionsApi, type HostSummary } from "../sessions/api";
 import { harnessChoices, type HarnessChoice } from "../sessions/harnesses";
 import { normalizeHostId, readLocalHostIdentity } from "../sessions/hostIdentity";
-import type { SessionNode, SessionsTreeProvider } from "../sessions/SessionsTreeProvider";
+import { repositoryWorktrees, worktreeForWorkspace } from "../sessions/worktrees";
+import type { RepositoryWorktrees } from "../sessions/worktrees";
+import type {
+  SessionNode,
+  SessionsTreeProvider,
+  WorktreeNode,
+} from "../sessions/SessionsTreeProvider";
+import { targetFolder } from "./worktrees";
 import {
   LAST_AGENT_STATE_KEY,
   NEW_SESSION_COMMAND,
+  NEW_SESSION_HERE_COMMAND,
+  NEW_WORKTREE_SESSION_COMMAND,
   OPEN_SESSION_COMMAND,
   REFRESH_SESSIONS_COMMAND,
   SHOW_ALL_SESSIONS_COMMAND,
@@ -23,6 +33,13 @@ interface HarnessPick extends vscode.QuickPickItem {
 
 interface FolderPick extends vscode.QuickPickItem {
   folder: vscode.WorkspaceFolder;
+}
+
+interface HarnessSelection {
+  api: SessionsApi;
+  target: ServerTarget;
+  host: HostSummary;
+  choice: HarnessChoice;
 }
 
 export function registerSessionCommands(
@@ -47,6 +64,19 @@ export function registerSessionCommands(
     vscode.commands.registerCommand(NEW_SESSION_COMMAND, async () => {
       await newSession(context, connection, controller, sessions);
     }),
+    vscode.commands.registerCommand(NEW_WORKTREE_SESSION_COMMAND, async () => {
+      await newWorktreeSession(context, connection, controller, sessions);
+    }),
+    vscode.commands.registerCommand(NEW_SESSION_HERE_COMMAND, async (node?: WorktreeNode) => {
+      if (!node) {
+        return;
+      }
+      const workspace = await targetFolder(node);
+      await createInFolder(context, connection, controller, sessions, {
+        workspace,
+        folderName: node.worktree.branch ?? workspace,
+      });
+    }),
     vscode.commands.registerCommand(REFRESH_SESSIONS_COMMAND, () => sessions.refresh()),
     vscode.commands.registerCommand(SHOW_FOLDER_SESSIONS_COMMAND, () =>
       sessions.setScope("folder"),
@@ -55,29 +85,141 @@ export function registerSessionCommands(
   );
 }
 
+interface CreateTarget {
+  workspace: string;
+  folderName: string;
+  git?: { branchName: string; baseBranch?: string };
+}
+
 async function newSession(
   context: vscode.ExtensionContext,
   connection: ServerConnection,
   controller: EditorPanelController,
   sessions: SessionsTreeProvider,
 ): Promise<void> {
+  const folder = await pickWorkspaceFolder();
+  if (!folder) {
+    if (!vscode.workspace.workspaceFolders?.length) {
+      void vscode.window.showWarningMessage("Open a folder in VS Code to create a session in it.");
+    }
+    return;
+  }
+  await createInFolder(context, connection, controller, sessions, {
+    workspace: folder.uri.fsPath,
+    folderName: folder.name,
+  });
+}
+
+/** Create a session whose host checks out a new worktree off the main checkout. */
+async function newWorktreeSession(
+  context: vscode.ExtensionContext,
+  connection: ServerConnection,
+  controller: EditorPanelController,
+  sessions: SessionsTreeProvider,
+): Promise<void> {
+  const folder = await pickWorkspaceFolder();
+  if (!folder) {
+    if (!vscode.workspace.workspaceFolders?.length) {
+      void vscode.window.showWarningMessage("Open a folder in VS Code to create a session in it.");
+    }
+    return;
+  }
+  const repository = await repositoryWorktrees(folder.uri.fsPath);
+  if (repository.worktrees.length === 0) {
+    void vscode.window.showWarningMessage(
+      `${folder.name} isn't a git repository. Create a session in this folder instead.`,
+    );
+    return;
+  }
+  const git = await pickWorktreeBranch(repository);
+  if (!git) {
+    return;
+  }
+  await createInFolder(context, connection, controller, sessions, {
+    workspace: folder.uri.fsPath,
+    folderName: folder.name,
+    git,
+  });
+}
+
+/** A new branch name in the web app's style, plus which commit to start from. */
+async function pickWorktreeBranch(
+  repository: RepositoryWorktrees,
+): Promise<{ branchName: string; baseBranch?: string } | undefined> {
+  const branchName = await vscode.window.showInputBox({
+    title: "New Session in a New Worktree",
+    prompt: "Branch to create for the worktree",
+    value: `worktree-${Math.random().toString(16).slice(2, 10)}`,
+    validateInput: (value) => (value.trim() === "" ? "Enter a branch name." : undefined),
+  });
+  if (!branchName) {
+    return undefined;
+  }
+  const mainBranch = repository.worktrees.find((worktree) => worktree.isMain)?.branch;
+  const currentBranch = worktreeForWorkspace(repository.worktrees, repository.folder)?.branch;
+  interface BasePick extends vscode.QuickPickItem {
+    baseBranch?: string;
+  }
+  const picks: BasePick[] = [
+    {
+      label: "$(repo) Main checkout",
+      description: mainBranch ? `Start from ${mainBranch}` : "Start from the main checkout's HEAD",
+      baseBranch: undefined,
+    },
+  ];
+  if (currentBranch && currentBranch !== mainBranch) {
+    picks.push({
+      label: "$(git-branch) This window's branch",
+      description: `Start from ${currentBranch}`,
+      baseBranch: currentBranch,
+    });
+  }
+  const base =
+    picks.length === 1
+      ? picks[0]
+      : await vscode.window.showQuickPick(picks, { title: `Base for ${branchName}` });
+  if (!base) {
+    return undefined;
+  }
+  return { branchName: branchName.trim(), baseBranch: base.baseBranch };
+}
+
+async function createInFolder(
+  context: vscode.ExtensionContext,
+  connection: ServerConnection,
+  controller: EditorPanelController,
+  sessions: SessionsTreeProvider,
+  target: CreateTarget,
+): Promise<void> {
+  const selection = await pickHostAndHarness(
+    context,
+    connection,
+    controller,
+    sessions,
+    target.folderName,
+  );
+  if (!selection) {
+    return;
+  }
+  await createAndOpen(context, connection, controller, sessions, selection, target);
+}
+
+/** The server, this computer as an online host, and the harness to launch. */
+async function pickHostAndHarness(
+  context: vscode.ExtensionContext,
+  connection: ServerConnection,
+  controller: EditorPanelController,
+  sessions: SessionsTreeProvider,
+  folderName: string,
+): Promise<HarnessSelection | undefined> {
   const target = connection.serverTarget;
   if (!target) {
     controller.ensure();
     void vscode.window.showWarningMessage(
       "Start or connect to an Omnigent server before creating a session.",
     );
-    return;
+    return undefined;
   }
-  const folder = await pickWorkspaceFolder();
-  if (!folder) {
-    if (vscode.workspace.workspaceFolders?.length) {
-      return;
-    }
-    void vscode.window.showWarningMessage("Open a folder in VS Code to create a session in it.");
-    return;
-  }
-
   const api = SessionsApi.forTarget(target);
   try {
     const [hosts, agents, identity] = await Promise.all([
@@ -98,61 +240,87 @@ async function newSession(
       if (picked === connect) {
         await vscode.commands.executeCommand(HOST_HERE_COMMAND);
       }
-      return;
+      return undefined;
     }
 
     const lastUsedAgentId = context.globalState.get<string>(LAST_AGENT_STATE_KEY);
     const choices = harnessChoices(agents, host, lastUsedAgentId);
     if (choices.length === 0) {
       void vscode.window.showErrorMessage("The server didn't return any coding agents.");
-      return;
+      return undefined;
     }
     const picked = await vscode.window.showQuickPick(harnessPicks(choices, lastUsedAgentId), {
-      title: `New Omnigent Session in ${folder.name}`,
+      title: `New Omnigent Session in ${folderName}`,
       placeHolder: "Choose a coding agent",
       matchOnDescription: true,
     });
     if (!picked?.choice) {
-      return;
+      return undefined;
     }
     const choice = picked.choice;
     if (!choice.available) {
       void vscode.window.showWarningMessage(
         `${choice.label} isn't ready on this computer: ${choice.unavailableReason}.`,
       );
-      return;
+      return undefined;
     }
     if (connection.serverTarget?.baseUrl !== target.baseUrl) {
       void vscode.window.showWarningMessage("The Omnigent server changed. Choose a harness again.");
-      return;
+      return undefined;
     }
+    return { api, target, host, choice };
+  } catch (error) {
+    reportCreateError(error, sessions);
+    return undefined;
+  }
+}
 
-    const id = await api.createSession({
+async function createAndOpen(
+  context: vscode.ExtensionContext,
+  connection: ServerConnection,
+  controller: EditorPanelController,
+  sessions: SessionsTreeProvider,
+  selection: HarnessSelection,
+  target: CreateTarget,
+): Promise<void> {
+  const { api, target: server, host, choice } = selection;
+  try {
+    const created = await api.createSession({
       agentId: choice.agentId,
       hostId: host.id,
-      workspace: folder.uri.fsPath,
+      workspace: target.workspace,
+      git: target.git,
     });
     await context.globalState.update(LAST_AGENT_STATE_KEY, choice.agentId);
-    if (connection.serverTarget?.baseUrl !== target.baseUrl) {
+    if (target.git && !created.gitBranch) {
+      void vscode.window.showWarningMessage(
+        "The server didn't report a new worktree. It may be too old to create one; check where the session is running before relying on it.",
+      );
+    }
+    if (connection.serverTarget?.baseUrl !== server.baseUrl) {
       void sessions.refresh();
       void vscode.window.showInformationMessage(
-        `The session was created on ${target.displayUrl ?? target.baseUrl}, but VS Code switched servers. Switch back to open it.`,
+        `The session was created on ${server.displayUrl ?? server.baseUrl}, but VS Code switched servers. Switch back to open it.`,
       );
       return;
     }
-    controller.openPath(`/c/${encodeURIComponent(id)}`);
+    controller.openPath(`/c/${encodeURIComponent(created.id)}`);
     void sessions.refresh();
   } catch (error) {
-    if (error instanceof NetworkError && error.timedOut) {
-      void sessions.refresh();
-      void vscode.window.showWarningMessage(
-        "The session launch timed out, but it may still complete. Refresh Sessions before retrying so you don't create a duplicate.",
-      );
-      return;
-    }
-    const detail = error instanceof Error ? error.message : String(error);
-    void vscode.window.showErrorMessage(`Couldn't create the Omnigent session: ${detail}`);
+    reportCreateError(error, sessions);
   }
+}
+
+function reportCreateError(error: unknown, sessions: SessionsTreeProvider): void {
+  if (error instanceof NetworkError && error.timedOut) {
+    void sessions.refresh();
+    void vscode.window.showWarningMessage(
+      "The session launch timed out, but it may still complete. Refresh Sessions before retrying so you don't create a duplicate.",
+    );
+    return;
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  void vscode.window.showErrorMessage(`Couldn't create the Omnigent session: ${detail}`);
 }
 
 function harnessPicks(choices: readonly HarnessChoice[], lastUsedAgentId?: string): HarnessPick[] {

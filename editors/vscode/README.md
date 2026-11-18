@@ -15,6 +15,24 @@ HTTP API (`server/API.md`); there is nothing new to run on the server side.
   shows sessions running on this computer in any open workspace folder, including every
   git worktree of its repository. Use the folder/globe toolbar button to switch between
   that scope and **All Sessions**. Click a session to open it in the editor-beside pane.
+- When the repository has more than one worktree, **This Folder** groups sessions by
+  worktree: the worktree this window has open comes first (expanded), then worktrees
+  with sessions waiting on you or running, then the rest. Each row shows the branch,
+  whether it's this window, and waiting/running counts; expand it to see its sessions.
+  Sessions in single-checkout repositories and plain folders stay in a flat list.
+- **Omnigent: Switch Worktree…** (the git-branch toolbar button) lists the repository's
+  worktrees with their session status and opens one in a new window, or in this window
+  when `omnigent.worktrees.openIn` is `currentWindow`. Opening keeps the subfolder you
+  had open when the worktree has it. A worktree row's inline and context actions open
+  it in a new or this window, open a terminal there, copy its path, or reveal it in the
+  OS file manager. Worktree navigation reads local git and works without a server.
+- **Omnigent: New Session in New Worktree…** (the repo-fork toolbar button) picks a
+  coding agent, a branch name (default `worktree-<hex>`), and a base — the main
+  checkout's HEAD or this window's branch — and asks the host to create the worktree
+  with the session, like the web app's worktree option. A worktree row's **+** creates
+  a session in that worktree without any new branch. A session in another worktree has
+  a **Go to Worktree** action: it opens that worktree's window with the session in the
+  pane, via a short-lived handoff the target window consumes on startup or focus.
 - The view's **+** button (**Omnigent: New Session in This Folder**) picks a coding
   agent, marks agents whose CLI is unavailable on this computer, creates the session in
   the current workspace folder, and opens its composer. The last-used agent comes first.
@@ -176,7 +194,7 @@ src/
 ├── extension.ts        # activate()/deactivate() — wires the panel, connection, commands, view
 ├── commands/           # open/connect/session commands and start/host/setup commands
 ├── cli/                # find the omnigent CLI and run it in a task terminal
-├── sessions/           # Sessions tree, HTTP client, host identity, scopes, harness labels
+├── sessions/           # Sessions tree, HTTP client, host identity, scopes, worktrees, harness labels
 ├── panel/              # EditorPanelController, host.ts (render), iframeHtml.ts, csp.ts
 ├── config/             # settings + server-target resolution
 ├── discovery/          # local-server discovery (pidfile / health / liveness)
